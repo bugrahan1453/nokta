@@ -1,0 +1,65 @@
+# ============================================================
+# Binance Futures Trading Bot - Bağımlılıklar
+# Kurulum: pip install -r requirements.txt
+# ============================================================
+
+# --- Binance API ---
+python-binance==1.0.19
+binance-futures-connector==4.0.2
+
+# --- Teknik Analiz ---
+pandas==2.1.4
+pandas-ta==0.3.14b
+numpy==1.26.4
+ta==0.11.0
+
+# --- Web Çerçevesi ---
+flask==3.0.0
+flask-login==0.6.3
+flask-wtf==1.2.1
+flask-socketio==5.3.6
+Werkzeug==3.0.1
+WTForms==3.1.1
+
+# --- Async & Zamanlama ---
+aiohttp==3.9.1
+asyncio==3.4.3
+apscheduler==3.10.4
+websocket-client==1.7.0
+websockets==12.0
+
+# --- Veritabanı ---
+sqlalchemy==2.0.23
+alembic==1.13.0
+
+# --- Telegram ---
+python-telegram-bot==20.7
+
+# --- AI ---
+anthropic==0.40.0
+
+# --- Ortam & Config ---
+python-dotenv==1.0.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# --- HTTP ---
+requests==2.31.0
+httpx==0.26.0
+urllib3==2.1.0
+
+# --- Yardımcı ---
+python-dateutil==2.8.2
+pytz==2023.3.post1
+schedule==1.2.1
+
+# --- Güvenlik ---
+cryptography==41.0.7
+itsdangerous==2.1.2
+
+# --- Loglama ---
+colorlog==6.8.0
+loguru==0.7.2
+
+# --- Sistem ---
+psutil==5.9.7

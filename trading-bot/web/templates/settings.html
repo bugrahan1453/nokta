@@ -1,0 +1,286 @@
+{% extends "base.html" %}
+{% block title %}Ayarlar{% endblock %}
+{% block page_title %}<i class="bi bi-gear me-2"></i>Ayarlar{% endblock %}
+
+{% block content %}
+
+<!-- Genel Ayarlar -->
+<div class="card-dark mb-4">
+    <div class="card-header-dark">
+        <i class="bi bi-sliders me-2"></i>Genel Bot Ayarları
+    </div>
+    <div class="p-4">
+        <form id="generalSettingsForm">
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label class="form-label">Maks Eş Zamanlı Pozisyon</label>
+                    <input type="number" class="form-control form-control-dark"
+                           name="max_concurrent_positions"
+                           value="{{ config.max_concurrent_positions }}"
+                           min="1" max="20">
+                    <small class="text-muted">Aynı anda kaç pozisyon açılabilir</small>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Günlük Maks Kayıp (USDT)</label>
+                    <input type="number" class="form-control form-control-dark"
+                           name="daily_max_loss"
+                           value="{{ config.daily_max_loss }}"
+                           min="1" step="0.01">
+                    <small class="text-muted">Bu limite ulaşınca bot durur</small>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Çalışma Başlangıcı (Saat)</label>
+                    <input type="number" class="form-control form-control-dark"
+                           name="trading_start_hour"
+                           value="{{ config.trading_hours.split(' - ')[0].split(':')[0] }}"
+                           min="0" max="23">
+                    <small class="text-muted">UTC saat (0-23)</small>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Çalışma Bitişi (Saat)</label>
+                    <input type="number" class="form-control form-control-dark"
+                           name="trading_end_hour"
+                           value="{{ config.trading_hours.split(' - ')[1].split(':')[0] }}"
+                           min="1" max="24">
+                    <small class="text-muted">UTC saat (1-24, 24=gece yarısı)</small>
+                </div>
+            </div>
+            <div class="mt-3 d-flex gap-2">
+                <button type="button" class="btn btn-primary" onclick="saveGeneralSettings()">
+                    <i class="bi bi-floppy me-2"></i>Kaydet
+                </button>
+                <button type="button" class="btn btn-outline-secondary" onclick="loadSettings()">
+                    <i class="bi bi-arrow-clockwise me-2"></i>Yenile
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Parite Ayarları -->
+<div class="card-dark mb-4">
+    <div class="card-header-dark d-flex justify-content-between align-items-center">
+        <div><i class="bi bi-table me-2"></i>Parite Bazlı Ayarlar</div>
+        <span class="badge bg-info">{{ config.trading_symbols | length }} Parite</span>
+    </div>
+    <div class="p-4">
+        <!-- Parite Sekmeleri -->
+        <ul class="nav nav-tabs mb-4" id="symbolTabs">
+            {% for symbol in config.trading_symbols %}
+            <li class="nav-item">
+                <button class="nav-link {% if loop.first %}active{% endif %}"
+                        data-bs-toggle="tab"
+                        data-bs-target="#sym-{{ symbol }}"
+                        type="button">
+                    {{ symbol }}
+                </button>
+            </li>
+            {% endfor %}
+        </ul>
+
+        <div class="tab-content" id="symbolTabContent">
+            {% for symbol in config.trading_symbols %}
+            {% set sym_cfg = config.symbol_configs[symbol] %}
+            <div class="tab-pane fade {% if loop.first %}show active{% endif %}" id="sym-{{ symbol }}">
+                <div class="row g-3">
+                    <div class="col-12">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox"
+                                   id="enabled-{{ symbol }}"
+                                   {% if sym_cfg.enabled %}checked{% endif %}>
+                            <label class="form-check-label" for="enabled-{{ symbol }}">
+                                <strong>{{ symbol }}</strong> işlemlerini aktif et
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="col-md-2">
+                        <label class="form-label">Kaldıraç (x)</label>
+                        <input type="number" class="form-control form-control-dark"
+                               id="leverage-{{ symbol }}"
+                               value="{{ sym_cfg.leverage }}"
+                               min="1" max="125">
+                        <small class="text-muted">1x - 125x</small>
+                    </div>
+
+                    <div class="col-md-2">
+                        <label class="form-label">Pozisyon Büyüklüğü (%)</label>
+                        <input type="number" class="form-control form-control-dark"
+                               id="position-{{ symbol }}"
+                               value="{{ sym_cfg.position_size_pct }}"
+                               min="0.1" max="50" step="0.1">
+                        <small class="text-muted">Kasa yüzdesi</small>
+                    </div>
+
+                    <div class="col-md-2">
+                        <label class="form-label">Stop-Loss (%)</label>
+                        <input type="number" class="form-control form-control-dark"
+                               id="sl-{{ symbol }}"
+                               value="{{ sym_cfg.stop_loss_pct }}"
+                               min="0.1" max="20" step="0.1">
+                        <small class="text-muted">Giriş fiyatından uzaklık</small>
+                    </div>
+
+                    <div class="col-md-2">
+                        <label class="form-label">Take-Profit (%)</label>
+                        <input type="number" class="form-control form-control-dark"
+                               id="tp-{{ symbol }}"
+                               value="{{ sym_cfg.take_profit_pct }}"
+                               min="0.1" max="50" step="0.1">
+                        <small class="text-muted">Giriş fiyatından uzaklık</small>
+                    </div>
+
+                    <div class="col-md-2">
+                        <label class="form-label">Trailing Aktivasyon (%)</label>
+                        <input type="number" class="form-control form-control-dark"
+                               id="trailing-act-{{ symbol }}"
+                               value="{{ sym_cfg.trailing_activation_pct }}"
+                               min="0.1" max="20" step="0.1">
+                        <small class="text-muted">Min PNL% trailing için</small>
+                    </div>
+
+                    <div class="col-md-2">
+                        <label class="form-label">Trailing Geri Çekilme (%)</label>
+                        <input type="number" class="form-control form-control-dark"
+                               id="trailing-cb-{{ symbol }}"
+                               value="{{ sym_cfg.trailing_callback_pct }}"
+                               min="0.05" max="10" step="0.05">
+                        <small class="text-muted">Tepeden geri çekilme</small>
+                    </div>
+                </div>
+
+                <!-- Risk/Ödül Göstergesi -->
+                <div class="risk-reward-indicator mt-3 p-3 rounded" style="background: rgba(255,255,255,0.03);">
+                    <div class="row align-items-center">
+                        <div class="col-md-8">
+                            <small class="text-muted">Risk/Ödül Oranı:</small>
+                            <span class="ms-2 fw-bold" id="rr-{{ symbol }}">
+                                1:{{ (sym_cfg.take_profit_pct / sym_cfg.stop_loss_pct) | round(2) }}
+                            </span>
+                            {% if sym_cfg.take_profit_pct / sym_cfg.stop_loss_pct >= 2 %}
+                                <span class="badge bg-success ms-2">İyi</span>
+                            {% elif sym_cfg.take_profit_pct / sym_cfg.stop_loss_pct >= 1.5 %}
+                                <span class="badge bg-warning text-dark ms-2">Orta</span>
+                            {% else %}
+                                <span class="badge bg-danger ms-2">Kötü</span>
+                            {% endif %}
+                        </div>
+                        <div class="col-md-4 text-end">
+                            <button class="btn btn-sm btn-primary" onclick="saveSymbolSettings('{{ symbol }}')">
+                                <i class="bi bi-floppy me-1"></i>{{ symbol }} Kaydet
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<!-- Sistem Bilgileri -->
+<div class="card-dark mb-4">
+    <div class="card-header-dark">
+        <i class="bi bi-info-circle me-2"></i>Sistem Bilgileri
+    </div>
+    <div class="p-4">
+        <div class="row g-3">
+            <div class="col-md-3">
+                <div class="info-box">
+                    <div class="info-box-label">Mod</div>
+                    <div class="info-box-value">
+                        {% if config.testnet %}
+                            <span class="badge bg-warning text-dark">TESTNET</span>
+                        {% else %}
+                            <span class="badge bg-danger">CANLI</span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="info-box">
+                    <div class="info-box-label">Sinyal Zaman Dilimi</div>
+                    <div class="info-box-value">{{ config.signal_timeframe }} Dakika</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="info-box">
+                    <div class="info-box-label">Trend Zaman Dilimi</div>
+                    <div class="info-box-value">{{ config.trend_timeframe }} Dakika</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="info-box">
+                    <div class="info-box-label">Telegram</div>
+                    <div class="info-box-value">
+                        {% if config.telegram_enabled %}
+                            <span class="badge bg-success">Aktif</span>
+                        {% else %}
+                            <span class="badge bg-secondary">Pasif</span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="info-box">
+                    <div class="info-box-label">AI Katmanı</div>
+                    <div class="info-box-value">
+                        {% if config.ai_enabled %}
+                            <span class="badge bg-info">Aktif</span>
+                        {% else %}
+                            <span class="badge bg-secondary">Pasif</span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+async function saveSymbolSettings(symbol) {
+    const data = {
+        symbol: symbol,
+        leverage: parseInt(document.getElementById(`leverage-${symbol}`).value),
+        position_size_pct: parseFloat(document.getElementById(`position-${symbol}`).value),
+        stop_loss_pct: parseFloat(document.getElementById(`sl-${symbol}`).value),
+        take_profit_pct: parseFloat(document.getElementById(`tp-${symbol}`).value),
+        trailing_activation_pct: parseFloat(document.getElementById(`trailing-act-${symbol}`).value),
+        trailing_callback_pct: parseFloat(document.getElementById(`trailing-cb-${symbol}`).value),
+        enabled: document.getElementById(`enabled-${symbol}`).checked,
+    };
+
+    // Risk/Ödül doğrulama
+    if (data.take_profit_pct < data.stop_loss_pct) {
+        showAlert('warning', 'Uyarı: Take-profit stop-loss\'tan küçük. Risk/ödül oranı kötü.');
+    }
+
+    const result = await apiPost('/api/settings/symbol', data);
+    showAlert(result.success ? 'success' : 'danger', result.message || result.error);
+}
+
+async function saveGeneralSettings() {
+    const form = document.getElementById('generalSettingsForm');
+    const data = {
+        max_concurrent_positions: parseInt(form.querySelector('[name=max_concurrent_positions]').value),
+        daily_max_loss: parseFloat(form.querySelector('[name=daily_max_loss]').value),
+        trading_start_hour: parseInt(form.querySelector('[name=trading_start_hour]').value),
+        trading_end_hour: parseInt(form.querySelector('[name=trading_end_hour]').value),
+    };
+
+    const result = await apiPost('/api/settings/general', data);
+    showAlert(result.success ? 'success' : 'danger', result.message || result.error);
+}
+
+async function loadSettings() {
+    const result = await apiGet('/api/settings');
+    if (result.success) {
+        showAlert('info', 'Ayarlar yenilendi. Sayfa yenileniyor...');
+        setTimeout(() => location.reload(), 1000);
+    }
+}
+</script>
+{% endblock %}

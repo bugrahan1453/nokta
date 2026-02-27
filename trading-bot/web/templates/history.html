@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}İşlem Geçmişi{% endblock %}
+{% block page_title %}<i class="bi bi-clock-history me-2"></i>İşlem Geçmişi{% endblock %}
+
+{% block content %}
+
+<!-- Özet İstatistikler -->
+<div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+        <div class="stat-card">
+            <div class="stat-icon bg-primary"><i class="bi bi-list-ol"></i></div>
+            <div class="stat-info">
+                <div class="stat-label">Toplam İşlem</div>
+                <div class="stat-value" id="totalTrades">--</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="stat-card">
+            <div class="stat-icon bg-success"><i class="bi bi-trophy"></i></div>
+            <div class="stat-info">
+                <div class="stat-label">Win Rate</div>
+                <div class="stat-value" id="winRate">--%</div>
+                <div class="stat-sub" id="winLoss">W:- / L:-</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="stat-card">
+            <div class="stat-icon bg-warning"><i class="bi bi-currency-dollar"></i></div>
+            <div class="stat-info">
+                <div class="stat-label">Toplam PNL</div>
+                <div class="stat-value" id="totalPnl">--</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="stat-card">
+            <div class="stat-icon bg-info"><i class="bi bi-bar-chart"></i></div>
+            <div class="stat-info">
+                <div class="stat-label">En İyi / En Kötü</div>
+                <div class="stat-value" id="bestWorst">--</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Filtreler -->
+<div class="card-dark mb-4">
+    <div class="p-3">
+        <div class="row g-2 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label mb-1">Parite</label>
+                <select class="form-select form-select-sm form-control-dark" id="filterSymbol">
+                    <option value="">Tümü</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label mb-1">Gösterilecek Sayı</label>
+                <select class="form-select form-select-sm form-control-dark" id="filterLimit">
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-sm btn-primary w-100" onclick="loadHistory()">
+                    <i class="bi bi-search me-1"></i>Filtrele
+                </button>
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-sm btn-outline-secondary w-100" onclick="exportCSV()">
+                    <i class="bi bi-download me-1"></i>CSV İndir
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- İşlem Tablosu -->
+<div class="card-dark">
+    <div class="card-header-dark d-flex justify-content-between align-items-center">
+        <div><i class="bi bi-table me-2"></i>İşlem Listesi</div>
+        <span class="badge bg-secondary" id="tradeCount">0 İşlem</span>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-dark table-hover table-sm mb-0">
+            <thead class="sticky-top">
+                <tr>
+                    <th>#</th>
+                    <th>Parite</th>
+                    <th>Yön</th>
+                    <th>Giriş Fiyatı</th>
+                    <th>Çıkış Fiyatı</th>
+                    <th>Miktar</th>
+                    <th>Kaldıraç</th>
+                    <th>PNL (USDT)</th>
+                    <th>PNL (%)</th>
+                    <th>Giriş Zamanı</th>
+                    <th>Çıkış Zamanı</th>
+                    <th>Sebep</th>
+                </tr>
+            </thead>
+            <tbody id="tradesTable">
+                <tr>
+                    <td colspan="12" class="text-center text-muted py-4">
+                        <div class="spinner-border spinner-border-sm me-2"></div>Yükleniyor...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let allTrades = [];
+
+async function loadHistory() {
+    const symbol = document.getElementById('filterSymbol').value;
+    const limit = document.getElementById('filterLimit').value;
+
+    const params = new URLSearchParams({ limit });
+    if (symbol) params.append('symbol', symbol);
+
+    const data = await apiGet(`/api/trades?${params}`);
+    if (!data.success) {
+        showAlert('danger', data.error || 'Geçmiş yüklenemedi');
+        return;
+    }
+
+    allTrades = data.trades;
+    renderTrades(allTrades);
+    renderStats(data.overall_stats);
+
+    // Parite filtresi seçeneklerini güncelle
+    const symbols = [...new Set(allTrades.map(t => t.symbol))].sort();
+    const filterEl = document.getElementById('filterSymbol');
+    const currentVal = filterEl.value;
+    filterEl.innerHTML = '<option value="">Tümü</option>' +
+        symbols.map(s => `<option value="${s}" ${s === currentVal ? 'selected' : ''}>${s}</option>`).join('');
+}
+
+function renderTrades(trades) {
+    const tbody = document.getElementById('tradesTable');
+    document.getElementById('tradeCount').textContent = `${trades.length} İşlem`;
+
+    if (!trades.length) {
+        tbody.innerHTML = `<tr><td colspan="12" class="text-center text-muted py-4">
+            <i class="bi bi-inbox me-2"></i>İşlem bulunamadı</td></tr>`;
+        return;
+    }
+
+    const reasonMap = {
+        'SL': '<span class="badge bg-danger">Stop-Loss</span>',
+        'TP': '<span class="badge bg-success">Take-Profit</span>',
+        'TRAILING': '<span class="badge bg-warning text-dark">Trailing</span>',
+        'MANUAL': '<span class="badge bg-secondary">Manuel</span>',
+        'DAILY_LIMIT': '<span class="badge bg-danger">Günlük Limit</span>',
+        'WATCHDOG': '<span class="badge bg-info">Watchdog</span>',
+    };
+
+    tbody.innerHTML = trades.map((t, i) => {
+        const pnlClass = (t.pnl_usdt || 0) >= 0 ? 'text-success' : 'text-danger';
+        const sideClass = t.side === 'LONG' ? 'badge bg-success' : 'badge bg-danger';
+        const entryTime = t.entry_time ? new Date(t.entry_time).toLocaleString('tr-TR') : '--';
+        const exitTime = t.exit_time ? new Date(t.exit_time).toLocaleString('tr-TR') : '--';
+        const reason = reasonMap[t.close_reason] || (t.close_reason || '--');
+
+        return `<tr>
+            <td><small class="text-muted">${t.id}</small></td>
+            <td><strong>${t.symbol}</strong></td>
+            <td><span class="${sideClass}">${t.side}</span></td>
+            <td>${t.entry_price ? t.entry_price.toFixed(4) : '--'}</td>
+            <td>${t.exit_price ? t.exit_price.toFixed(4) : '--'}</td>
+            <td>${t.quantity}</td>
+            <td>${t.leverage}x</td>
+            <td class="${pnlClass} fw-bold">
+                ${t.pnl_usdt !== null ? (t.pnl_usdt >= 0 ? '+' : '') + t.pnl_usdt.toFixed(4) : '--'}
+            </td>
+            <td class="${pnlClass}">
+                ${t.pnl_pct !== null ? (t.pnl_pct >= 0 ? '+' : '') + t.pnl_pct.toFixed(2) + '%' : '--'}
+            </td>
+            <td><small>${entryTime}</small></td>
+            <td><small>${exitTime}</small></td>
+            <td>${reason}</td>
+        </tr>`;
+    }).join('');
+}
+
+function renderStats(stats) {
+    if (!stats) return;
+
+    document.getElementById('totalTrades').textContent = stats.total_trades || 0;
+
+    const winRateEl = document.getElementById('winRate');
+    winRateEl.textContent = `%${(stats.win_rate || 0).toFixed(1)}`;
+
+    document.getElementById('winLoss').textContent =
+        `W:${stats.winning_trades} / L:${stats.losing_trades}`;
+
+    const pnlEl = document.getElementById('totalPnl');
+    const pnl = stats.total_pnl_usdt || 0;
+    pnlEl.textContent = formatCurrency(pnl);
+    pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'text-success' : 'text-danger');
+
+    const best = stats.best_trade || 0;
+    const worst = stats.worst_trade || 0;
+    document.getElementById('bestWorst').innerHTML =
+        `<span class="text-success">+${best.toFixed(2)}</span> / <span class="text-danger">${worst.toFixed(2)}</span>`;
+}
+
+function exportCSV() {
+    if (!allTrades.length) {
+        showAlert('warning', 'İndirilecek veri yok.');
+        return;
+    }
+
+    const headers = ['ID', 'Parite', 'Yön', 'Giriş', 'Çıkış', 'Miktar', 'Kaldıraç', 'PNL_USDT', 'PNL_PCT', 'Giriş_Zamanı', 'Çıkış_Zamanı', 'Sebep'];
+    const rows = allTrades.map(t => [
+        t.id, t.symbol, t.side,
+        t.entry_price, t.exit_price, t.quantity, t.leverage,
+        t.pnl_usdt, t.pnl_pct,
+        t.entry_time, t.exit_time, t.close_reason
+    ]);
+
+    const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `trading_history_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+}
+
+// İlk yükleme
+loadHistory();
+</script>
+{% endblock %}

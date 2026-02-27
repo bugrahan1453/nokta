@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Trading Bot{% endblock %} | Binance Futures Bot</title>
+
+    <!-- Bootstrap 5 -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <!-- Custom CSS -->
+    <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
+</head>
+<body class="dark-theme">
+
+<!-- Sidebar -->
+<div class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+        <i class="bi bi-robot"></i>
+        <span>Trading Bot</span>
+    </div>
+
+    <nav class="sidebar-nav">
+        <a href="{{ url_for('dashboard') }}" class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}">
+            <i class="bi bi-speedometer2"></i>
+            <span>Dashboard</span>
+        </a>
+        <a href="{{ url_for('history_page') }}" class="nav-link {% if request.endpoint == 'history_page' %}active{% endif %}">
+            <i class="bi bi-clock-history"></i>
+            <span>İşlem Geçmişi</span>
+        </a>
+        <a href="{{ url_for('settings_page') }}" class="nav-link {% if request.endpoint == 'settings_page' %}active{% endif %}">
+            <i class="bi bi-gear"></i>
+            <span>Ayarlar</span>
+        </a>
+        <a href="{{ url_for('logs_page') }}" class="nav-link {% if request.endpoint == 'logs_page' %}active{% endif %}">
+            <i class="bi bi-terminal"></i>
+            <span>Log Ekranı</span>
+        </a>
+    </nav>
+
+    <div class="sidebar-footer">
+        <div class="system-status" id="systemStatus">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">Bağlanıyor...</span>
+        </div>
+        <a href="{{ url_for('logout') }}" class="btn btn-sm btn-outline-secondary w-100 mt-2">
+            <i class="bi bi-box-arrow-right"></i> Çıkış
+        </a>
+    </div>
+</div>
+
+<!-- Main Content -->
+<div class="main-content" id="mainContent">
+    <!-- Topbar -->
+    <div class="topbar">
+        <button class="btn btn-sm sidebar-toggle" onclick="toggleSidebar()">
+            <i class="bi bi-list"></i>
+        </button>
+
+        <div class="topbar-title">{% block page_title %}{% endblock %}</div>
+
+        <div class="topbar-actions">
+            <!-- Bot Kontrol Butonları -->
+            <button class="btn btn-sm btn-success" id="btnStart" onclick="botAction('start')" title="Botu Başlat">
+                <i class="bi bi-play-fill"></i> Başlat
+            </button>
+            <button class="btn btn-sm btn-warning" id="btnStop" onclick="botAction('stop')" title="Botu Durdur">
+                <i class="bi bi-pause-fill"></i> Durdur
+            </button>
+            <button class="btn btn-sm btn-danger" id="btnCloseAll" onclick="botAction('close-all')" title="Tüm Pozisyonları Kapat">
+                <i class="bi bi-x-circle"></i> Tüm Kapat
+            </button>
+
+            <!-- Güncelleme zamanı -->
+            <small class="text-muted ms-2" id="lastUpdate">--:--</small>
+        </div>
+    </div>
+
+    <!-- Alert Container -->
+    <div id="alertContainer" class="px-3 pt-2"></div>
+
+    <!-- Page Content -->
+    <div class="page-content">
+        {% block content %}{% endblock %}
+    </div>
+</div>
+
+<!-- Bootstrap JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<!-- Custom JS -->
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+
+{% block extra_js %}{% endblock %}
+
+</body>
+</html>

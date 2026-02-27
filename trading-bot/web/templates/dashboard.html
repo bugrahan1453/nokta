@@ -1,0 +1,539 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block page_title %}<i class="bi bi-speedometer2 me-2"></i>Dashboard{% endblock %}
+
+{% block content %}
+<!-- İstatistik Kartları -->
+<div class="row g-3 mb-4">
+    <!-- Toplam Bakiye -->
+    <div class="col-6 col-lg-3">
+        <div class="stat-card">
+            <div class="stat-icon bg-primary">
+                <i class="bi bi-wallet2"></i>
+            </div>
+            <div class="stat-info">
+                <div class="stat-label">Toplam Bakiye</div>
+                <div class="stat-value" id="totalBalance">--</div>
+                <div class="stat-sub text-muted" id="availableBalance">Mevcut: --</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Gerçekleşmemiş PNL -->
+    <div class="col-6 col-lg-3">
+        <div class="stat-card">
+            <div class="stat-icon bg-warning">
+                <i class="bi bi-graph-up-arrow"></i>
+            </div>
+            <div class="stat-info">
+                <div class="stat-label">Gerçekleşmemiş PNL</div>
+                <div class="stat-value" id="unrealizedPnl">--</div>
+                <div class="stat-sub" id="openPositionCount">Açık: -- Pozisyon</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bugünkü PNL -->
+    <div class="col-6 col-lg-3">
+        <div class="stat-card">
+            <div class="stat-icon bg-success">
+                <i class="bi bi-calendar-check"></i>
+            </div>
+            <div class="stat-info">
+                <div class="stat-label">Bugünkü PNL</div>
+                <div class="stat-value" id="todayPnl">--</div>
+                <div class="stat-sub" id="todayWinRate">Win Rate: --%</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Günlük Kayıp -->
+    <div class="col-6 col-lg-3">
+        <div class="stat-card">
+            <div class="stat-icon bg-danger">
+                <i class="bi bi-shield-x"></i>
+            </div>
+            <div class="stat-info">
+                <div class="stat-label">Günlük Kayıp Limiti</div>
+                <div class="stat-value" id="dailyLoss">--</div>
+                <div class="stat-sub" id="dailyLossRemaining">Kalan: --</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <!-- Bot Durumu -->
+    <div class="col-md-4">
+        <div class="card-dark">
+            <div class="card-header-dark">
+                <i class="bi bi-robot me-2"></i>Bot Durumu
+            </div>
+            <div class="p-3">
+                <div class="d-flex align-items-center mb-3">
+                    <span class="status-badge" id="botStatusBadge">--</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">İnternet</span>
+                    <span id="internetStatus">--</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Binance</span>
+                    <span id="binanceStatus">--</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">WebSocket</span>
+                    <span id="wsStatus">--</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">AI Katmanı</span>
+                    <span id="aiStatus">--</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Son Kontrol</span>
+                    <span id="lastWatchdog">--</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Anlık Fiyatlar -->
+    <div class="col-md-4">
+        <div class="card-dark">
+            <div class="card-header-dark">
+                <i class="bi bi-currency-bitcoin me-2"></i>Anlık Fiyatlar
+            </div>
+            <div class="p-3" id="priceList">
+                <div class="text-muted text-center py-3">Yükleniyor...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Risk Durumu -->
+    <div class="col-md-4">
+        <div class="card-dark">
+            <div class="card-header-dark">
+                <i class="bi bi-shield-check me-2"></i>Risk Durumu
+            </div>
+            <div class="p-3">
+                <div class="info-row">
+                    <span class="info-label">Açık Pozisyon</span>
+                    <span id="riskOpenPos">--</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Maks Pozisyon</span>
+                    <span id="riskMaxPos">--</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Günlük Kayıp</span>
+                    <span id="riskDailyLoss">--</span>
+                </div>
+
+                <!-- Günlük Kayıp Progress -->
+                <div class="mt-2">
+                    <div class="d-flex justify-content-between mb-1">
+                        <small class="text-muted">Günlük Limit Kullanımı</small>
+                        <small id="dailyLossPct">--%</small>
+                    </div>
+                    <div class="progress" style="height: 8px;">
+                        <div class="progress-bar" id="dailyLossBar"
+                             role="progressbar" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <div class="info-row mt-2">
+                    <span class="info-label">Kilitli Pariteler</span>
+                    <span id="riskLockedSymbols" class="text-warning">--</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Açık Pozisyonlar -->
+<div class="card-dark mb-4">
+    <div class="card-header-dark d-flex justify-content-between align-items-center">
+        <div><i class="bi bi-list-check me-2"></i>Açık Pozisyonlar</div>
+        <span class="badge bg-primary" id="openTradeCount">0</span>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-dark table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>Parite</th>
+                    <th>Yön</th>
+                    <th>Giriş Fiyatı</th>
+                    <th>Güncel Fiyat</th>
+                    <th>Miktar</th>
+                    <th>Kaldıraç</th>
+                    <th>PNL (USDT)</th>
+                    <th>PNL (%)</th>
+                    <th>Trailing</th>
+                    <th>Süre</th>
+                    <th>İşlem</th>
+                </tr>
+            </thead>
+            <tbody id="openTradesTable">
+                <tr>
+                    <td colspan="11" class="text-center text-muted py-4">
+                        <i class="bi bi-inbox me-2"></i>Açık pozisyon yok
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- PNL Grafiği -->
+<div class="card-dark mb-4">
+    <div class="card-header-dark d-flex justify-content-between align-items-center">
+        <div><i class="bi bi-bar-chart-line me-2"></i>Günlük PNL Grafiği (Son 14 Gün)</div>
+        <select class="form-select form-select-sm w-auto bg-dark text-light border-secondary"
+                id="pnlDays" onchange="updatePnlChart()">
+            <option value="7">7 Gün</option>
+            <option value="14" selected>14 Gün</option>
+            <option value="30">30 Gün</option>
+        </select>
+    </div>
+    <div class="p-3">
+        <canvas id="pnlChart" height="100"></canvas>
+    </div>
+</div>
+
+<!-- Sinyal Durumları -->
+<div class="card-dark mb-4">
+    <div class="card-header-dark">
+        <i class="bi bi-broadcast me-2"></i>Son Sinyal Durumları
+    </div>
+    <div class="table-responsive">
+        <table class="table table-dark table-sm mb-0">
+            <thead>
+                <tr>
+                    <th>Parite</th>
+                    <th>Yön</th>
+                    <th>Güç</th>
+                    <th>K1 (EMA)</th>
+                    <th>K2 (RSI/MACD)</th>
+                    <th>K3 (Hacim)</th>
+                    <th>Durum</th>
+                    <th>Fiyat</th>
+                    <th>Zaman</th>
+                </tr>
+            </thead>
+            <tbody id="signalTable">
+                <tr>
+                    <td colspan="9" class="text-center text-muted py-3">Sinyal bekleniyor...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Bugünkü İşlemler -->
+<div class="card-dark">
+    <div class="card-header-dark">
+        <i class="bi bi-clock-history me-2"></i>Bugünkü İşlemler
+    </div>
+    <div class="p-3 text-center text-muted" id="todayTradesContainer">
+        <a href="{{ url_for('history_page') }}" class="btn btn-sm btn-outline-secondary">
+            <i class="bi bi-arrow-right me-1"></i>Tüm Geçmiş
+        </a>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let pnlChart = null;
+
+// Dashboard verisini yükle
+async function loadDashboard() {
+    try {
+        const data = await apiGet('/api/dashboard-data');
+        if (!data.success) return;
+
+        updateBalance(data.balance);
+        updateOpenTrades(data.open_trades);
+        updateRiskStatus(data.risk_status);
+        updateWatchdogStatus(data.watchdog_status);
+        updateBotStatus(data.bot_status);
+        updateTodayStats(data.today_stats);
+        updatePrices(data.prices);
+        updateSignals();
+
+        // PNL grafiğini güncelle
+        if (pnlChart) {
+            updatePnlChartData(data.daily_pnl);
+        } else {
+            initPnlChart(data.daily_pnl);
+        }
+
+        document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('tr-TR');
+    } catch (e) {
+        console.error('Dashboard yükleme hatası:', e);
+    }
+}
+
+function updateBalance(balance) {
+    if (!balance) return;
+    const total = balance.total || 0;
+    const available = balance.available || 0;
+    const unrealized = balance.unrealized_pnl || 0;
+
+    document.getElementById('totalBalance').textContent = formatCurrency(total);
+    document.getElementById('availableBalance').textContent = `Mevcut: ${formatCurrency(available)}`;
+
+    const pnlEl = document.getElementById('unrealizedPnl');
+    pnlEl.textContent = formatCurrency(unrealized);
+    pnlEl.className = 'stat-value ' + (unrealized >= 0 ? 'text-success' : 'text-danger');
+}
+
+function updateOpenTrades(trades) {
+    const tbody = document.getElementById('openTradesTable');
+    const countBadge = document.getElementById('openTradeCount');
+    const openPosCount = document.getElementById('openPositionCount');
+
+    countBadge.textContent = trades.length;
+    openPosCount.textContent = `Açık: ${trades.length} Pozisyon`;
+
+    if (!trades.length) {
+        tbody.innerHTML = `<tr><td colspan="11" class="text-center text-muted py-4">
+            <i class="bi bi-inbox me-2"></i>Açık pozisyon yok</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = trades.map(t => {
+        const pnlClass = t.pnl_usdt >= 0 ? 'text-success' : 'text-danger';
+        const sideClass = t.side === 'LONG' ? 'badge bg-success' : 'badge bg-danger';
+        const trailingBadge = t.trailing_activated
+            ? '<span class="badge bg-warning text-dark">Aktif</span>'
+            : '<span class="badge bg-secondary">Bekliyor</span>';
+
+        return `<tr>
+            <td><strong>${t.symbol}</strong></td>
+            <td><span class="${sideClass}">${t.side}</span></td>
+            <td>${t.entry_price.toFixed(4)}</td>
+            <td>${t.current_price.toFixed(4)}</td>
+            <td>${t.quantity}</td>
+            <td>${t.leverage}x</td>
+            <td class="${pnlClass} fw-bold">${t.pnl_usdt >= 0 ? '+' : ''}${t.pnl_usdt.toFixed(4)}</td>
+            <td class="${pnlClass}">${t.pnl_pct >= 0 ? '+' : ''}${t.pnl_pct.toFixed(2)}%</td>
+            <td>${trailingBadge}</td>
+            <td><small class="text-muted">${t.duration}</small></td>
+            <td>
+                <button class="btn btn-xs btn-danger" onclick="closePosition('${t.symbol}')">
+                    <i class="bi bi-x"></i>
+                </button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+function updateRiskStatus(risk) {
+    if (!risk) return;
+    document.getElementById('riskOpenPos').textContent = risk.open_position_count || 0;
+    document.getElementById('riskMaxPos').textContent = risk.max_concurrent_positions || '--';
+    document.getElementById('riskDailyLoss').textContent = formatCurrency(risk.daily_loss_usdt || 0);
+
+    const pct = risk.daily_loss_pct || 0;
+    document.getElementById('dailyLossPct').textContent = pct.toFixed(1) + '%';
+    document.getElementById('dailyLoss').textContent = formatCurrency(risk.daily_loss_usdt || 0);
+    document.getElementById('dailyLossRemaining').textContent = `Kalan: ${formatCurrency(risk.daily_loss_remaining || 0)}`;
+
+    const bar = document.getElementById('dailyLossBar');
+    bar.style.width = Math.min(100, pct) + '%';
+    bar.className = 'progress-bar ' + (pct > 80 ? 'bg-danger' : pct > 50 ? 'bg-warning' : 'bg-success');
+
+    const locked = risk.locked_symbols || [];
+    document.getElementById('riskLockedSymbols').textContent = locked.length ? locked.join(', ') : 'Yok';
+}
+
+function updateWatchdogStatus(wd) {
+    if (!wd) return;
+
+    const boolBadge = (ok) => ok
+        ? '<span class="badge bg-success">OK</span>'
+        : '<span class="badge bg-danger">HATA</span>';
+
+    document.getElementById('internetStatus').innerHTML = boolBadge(wd.internet_ok);
+    document.getElementById('binanceStatus').innerHTML = boolBadge(wd.binance_ok);
+    document.getElementById('wsStatus').innerHTML = boolBadge(wd.websocket_ok);
+
+    const lastCheck = wd.last_check ? new Date(wd.last_check).toLocaleTimeString('tr-TR') : '--';
+    document.getElementById('lastWatchdog').textContent = lastCheck;
+
+    // Sistem durumu
+    const statusEl = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    if (wd.system_status === 'normal') {
+        statusEl.className = 'status-dot online';
+        statusText.textContent = 'Normal';
+    } else if (wd.system_status === 'safe_mode') {
+        statusEl.className = 'status-dot warning';
+        statusText.textContent = 'Güvenli Mod';
+    } else {
+        statusEl.className = 'status-dot offline';
+        statusText.textContent = wd.system_status;
+    }
+}
+
+function updateBotStatus(status) {
+    const badge = document.getElementById('botStatusBadge');
+    const statusMap = {
+        'running': ['Çalışıyor', 'bg-success'],
+        'stopped': ['Durduruldu', 'bg-secondary'],
+        'paused': ['Durakladi', 'bg-warning text-dark'],
+        'unknown': ['Bilinmiyor', 'bg-secondary'],
+    };
+    const [text, cls] = statusMap[status] || ['Bilinmiyor', 'bg-secondary'];
+    badge.textContent = text;
+    badge.className = `status-badge badge ${cls}`;
+}
+
+function updateTodayStats(stats) {
+    if (!stats) return;
+    const pnlEl = document.getElementById('todayPnl');
+    pnlEl.textContent = formatCurrency(stats.total_pnl_usdt || 0);
+    pnlEl.className = 'stat-value ' + ((stats.total_pnl_usdt || 0) >= 0 ? 'text-success' : 'text-danger');
+    document.getElementById('todayWinRate').textContent = `Win Rate: ${(stats.win_rate || 0).toFixed(1)}%`;
+}
+
+function updatePrices(prices) {
+    if (!prices) return;
+    const container = document.getElementById('priceList');
+    const items = Object.entries(prices).map(([symbol, price]) => {
+        return `<div class="price-item">
+            <span class="price-symbol">${symbol}</span>
+            <span class="price-value">${price ? price.toFixed(4) : '--'}</span>
+        </div>`;
+    });
+    container.innerHTML = items.join('') || '<div class="text-muted">Fiyat yok</div>';
+}
+
+async function updateSignals() {
+    try {
+        const data = await apiGet('/api/signals');
+        if (!data.success) return;
+
+        const tbody = document.getElementById('signalTable');
+        const signals = data.signals || {};
+
+        if (!Object.keys(signals).length) {
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">Sinyal bekleniyor...</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = Object.entries(signals).map(([symbol, sig]) => {
+            const dirClass = sig.direction === 'LONG' ? 'text-success' : sig.direction === 'SHORT' ? 'text-danger' : 'text-muted';
+            const approved = sig.approved
+                ? '<span class="badge bg-success">ONAYLANDİ</span>'
+                : '<span class="badge bg-danger">REDDEDİLDİ</span>';
+
+            const layerBadge = (layer) => {
+                if (!layer) return '<span class="text-muted">-</span>';
+                return layer.approved
+                    ? '<i class="bi bi-check-circle text-success"></i>'
+                    : '<i class="bi bi-x-circle text-danger"></i>';
+            };
+
+            const strengthMap = {STRONG: 'text-success', MEDIUM: 'text-warning', WEAK: 'text-danger'};
+            const strengthClass = strengthMap[sig.strength] || '';
+
+            return `<tr>
+                <td><strong>${symbol}</strong></td>
+                <td class="${dirClass} fw-bold">${sig.direction}</td>
+                <td class="${strengthClass}">${sig.strength}</td>
+                <td>${layerBadge(sig.layer1)}</td>
+                <td>${layerBadge(sig.layer2)}</td>
+                <td>${layerBadge(sig.layer3)}</td>
+                <td>${approved}</td>
+                <td>${sig.signal_price ? sig.signal_price.toFixed(4) : '--'}</td>
+                <td><small class="text-muted">${sig.timestamp ? new Date(sig.timestamp).toLocaleTimeString('tr-TR') : '--'}</small></td>
+            </tr>`;
+        }).join('');
+    } catch(e) {
+        console.error('Sinyal güncelleme hatası:', e);
+    }
+}
+
+async function updatePnlChart() {
+    const days = parseInt(document.getElementById('pnlDays').value);
+    const data = await apiGet(`/api/trades/daily-pnl?days=${days}`);
+    if (data.success) updatePnlChartData(data.data);
+}
+
+function initPnlChart(pnlData) {
+    const ctx = document.getElementById('pnlChart').getContext('2d');
+
+    const labels = pnlData.map(d => d.date);
+    const values = pnlData.map(d => d.total_pnl);
+    const colors = values.map(v => v >= 0 ? 'rgba(25, 211, 107, 0.7)' : 'rgba(255, 75, 75, 0.7)');
+    const borderColors = values.map(v => v >= 0 ? '#19d36b' : '#ff4b4b');
+
+    pnlChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [{
+                label: 'Günlük PNL (USDT)',
+                data: values,
+                backgroundColor: colors,
+                borderColor: borderColors,
+                borderWidth: 1,
+                borderRadius: 4,
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: { labels: { color: '#aaa' } },
+                tooltip: {
+                    callbacks: {
+                        label: (ctx) => `PNL: ${ctx.raw >= 0 ? '+' : ''}${ctx.raw.toFixed(4)} USDT`
+                    }
+                }
+            },
+            scales: {
+                x: { ticks: { color: '#888' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                y: {
+                    ticks: { color: '#888', callback: v => v.toFixed(2) + ' $' },
+                    grid: { color: 'rgba(255,255,255,0.05)' }
+                }
+            }
+        }
+    });
+}
+
+function updatePnlChartData(pnlData) {
+    if (!pnlChart) { initPnlChart(pnlData); return; }
+    const values = pnlData.map(d => d.total_pnl);
+    pnlChart.data.labels = pnlData.map(d => d.date);
+    pnlChart.data.datasets[0].data = values;
+    pnlChart.data.datasets[0].backgroundColor = values.map(v => v >= 0 ? 'rgba(25, 211, 107, 0.7)' : 'rgba(255, 75, 75, 0.7)');
+    pnlChart.update();
+}
+
+async function closePosition(symbol) {
+    if (!confirm(`${symbol} pozisyonunu kapatmak istediğinizden emin misiniz?`)) return;
+    const result = await apiPost(`/api/position/close/${symbol}`);
+    showAlert(result.success ? 'success' : 'danger', result.message || result.error);
+    loadDashboard();
+}
+
+// AI durumu
+function updateAiStatus(aiStatus) {
+    const el = document.getElementById('aiStatus');
+    if (aiStatus && aiStatus.enabled) {
+        el.innerHTML = '<span class="badge bg-info">Aktif</span>';
+    } else {
+        el.innerHTML = '<span class="badge bg-secondary">Devre Dışı</span>';
+    }
+}
+
+// İlk yükleme
+loadDashboard();
+// Her 5 saniyede bir güncelle
+setInterval(loadDashboard, 5000);
+</script>
+{% endblock %}

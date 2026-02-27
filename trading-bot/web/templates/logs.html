@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+{% block title %}Log Ekranı{% endblock %}
+{% block page_title %}<i class="bi bi-terminal me-2"></i>Log Ekranı{% endblock %}
+
+{% block content %}
+
+<!-- Kontroller -->
+<div class="card-dark mb-3">
+    <div class="p-3">
+        <div class="row g-2 align-items-center">
+            <div class="col-auto">
+                <label class="form-label mb-0">Log Seviyesi:</label>
+            </div>
+            <div class="col-auto">
+                <select class="form-select form-select-sm form-control-dark" id="logLevel" onchange="loadDbLogs()">
+                    <option value="">Tümü</option>
+                    <option value="ERROR">HATA</option>
+                    <option value="WARNING">UYARI</option>
+                    <option value="INFO">BİLGİ</option>
+                    <option value="CRITICAL">KRİTİK</option>
+                </select>
+            </div>
+            <div class="col-auto">
+                <button class="btn btn-sm btn-outline-secondary" onclick="loadDbLogs()">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Yenile
+                </button>
+            </div>
+            <div class="col-auto">
+                <button class="btn btn-sm btn-outline-danger" onclick="clearTerminal()">
+                    <i class="bi bi-trash me-1"></i>Temizle
+                </button>
+            </div>
+            <div class="col-auto ms-auto">
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="autoScroll" checked>
+                    <label class="form-check-label" for="autoScroll">Otomatik Kaydır</label>
+                </div>
+            </div>
+            <div class="col-auto">
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="liveMode" onchange="toggleLiveMode()">
+                    <label class="form-check-label" for="liveMode">Canlı Akış</label>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Canlı Terminal -->
+<div class="card-dark mb-3">
+    <div class="card-header-dark d-flex justify-content-between align-items-center">
+        <div><i class="bi bi-terminal me-2"></i>Canlı Log Akışı</div>
+        <span class="badge bg-secondary" id="liveCount">0 Satır</span>
+    </div>
+    <div class="log-terminal" id="logTerminal">
+        <div class="text-muted text-center py-4">
+            Canlı akış için "Canlı Akış" modunu açın...
+        </div>
+    </div>
+</div>
+
+<!-- Veritabanı Logları -->
+<div class="card-dark">
+    <div class="card-header-dark d-flex justify-content-between align-items-center">
+        <div><i class="bi bi-database me-2"></i>Kayıtlı Loglar (Hata / Uyarı)</div>
+        <span class="badge bg-secondary" id="dbLogCount">0 Kayıt</span>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-dark table-sm mb-0">
+            <thead>
+                <tr>
+                    <th style="width: 80px">Seviye</th>
+                    <th style="width: 180px">Zaman</th>
+                    <th style="width: 150px">Modül</th>
+                    <th>Mesaj</th>
+                </tr>
+            </thead>
+            <tbody id="dbLogsTable">
+                <tr>
+                    <td colspan="4" class="text-center text-muted py-3">
+                        <div class="spinner-border spinner-border-sm me-2"></div>Yükleniyor...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let liveEventSource = null;
+let liveLineCount = 0;
+
+// Log seviyesi renkleri
+const levelColors = {
+    'DEBUG': '#888888',
+    'INFO': '#4fc3f7',
+    'WARNING': '#ffb74d',
+    'ERROR': '#ef5350',
+    'CRITICAL': '#ff1744',
+};
+
+const levelBadges = {
+    'DEBUG': '<span class="badge bg-secondary">DEBUG</span>',
+    'INFO': '<span class="badge bg-info">INFO</span>',
+    'WARNING': '<span class="badge bg-warning text-dark">UYARI</span>',
+    'ERROR': '<span class="badge bg-danger">HATA</span>',
+    'CRITICAL': '<span class="badge bg-danger">KRİTİK</span>',
+};
+
+async function loadDbLogs() {
+    const level = document.getElementById('logLevel').value;
+    const params = new URLSearchParams({ limit: 200 });
+    if (level) params.append('level', level);
+
+    const data = await apiGet(`/api/logs?${params}`);
+    if (!data.success) return;
+
+    const logs = data.logs || [];
+    document.getElementById('dbLogCount').textContent = `${logs.length} Kayıt`;
+
+    const tbody = document.getElementById('dbLogsTable');
+    if (!logs.length) {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-3">Log bulunamadı</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = logs.map(log => {
+        const time = log.created_at ? new Date(log.created_at).toLocaleString('tr-TR') : '--';
+        const badge = levelBadges[log.level] || `<span class="badge bg-secondary">${log.level}</span>`;
+        return `<tr>
+            <td>${badge}</td>
+            <td><small class="text-muted">${time}</small></td>
+            <td><code class="small">${log.module || '--'}</code></td>
+            <td><small>${escapeHtml(log.message || '')}</small></td>
+        </tr>`;
+    }).join('');
+}
+
+function toggleLiveMode() {
+    const isOn = document.getElementById('liveMode').checked;
+    if (isOn) {
+        startLiveStream();
+    } else {
+        stopLiveStream();
+    }
+}
+
+function startLiveStream() {
+    const terminal = document.getElementById('logTerminal');
+    terminal.innerHTML = '';
+    liveLineCount = 0;
+
+    liveEventSource = new EventSource('/api/logs/stream');
+    liveEventSource.onmessage = (e) => {
+        try {
+            const data = JSON.parse(e.data);
+            if (data.ping) return;
+            if (data.error) return;
+
+            const line = data.line || '';
+            if (!line.trim()) return;
+
+            appendLogLine(line);
+        } catch (err) {
+            console.error('Log parse hatası:', err);
+        }
+    };
+
+    liveEventSource.onerror = () => {
+        stopLiveStream();
+        document.getElementById('liveMode').checked = false;
+        appendLogLine('⚠️ Canlı akış bağlantısı kesildi.');
+    };
+}
+
+function stopLiveStream() {
+    if (liveEventSource) {
+        liveEventSource.close();
+        liveEventSource = null;
+    }
+}
+
+function appendLogLine(line) {
+    const terminal = document.getElementById('logTerminal');
+    const div = document.createElement('div');
+    div.className = 'log-line';
+
+    // Log seviyesine göre renk
+    let color = '#cccccc';
+    for (const [level, clr] of Object.entries(levelColors)) {
+        if (line.includes(`| ${level}`)) {
+            color = clr;
+            break;
+        }
+    }
+
+    div.style.color = color;
+    div.textContent = line;
+    terminal.appendChild(div);
+
+    liveLineCount++;
+    document.getElementById('liveCount').textContent = `${liveLineCount} Satır`;
+
+    // Max 500 satır
+    const lines = terminal.querySelectorAll('.log-line');
+    if (lines.length > 500) {
+        lines[0].remove();
+    }
+
+    // Otomatik kaydır
+    if (document.getElementById('autoScroll').checked) {
+        terminal.scrollTop = terminal.scrollHeight;
+    }
+}
+
+function clearTerminal() {
+    document.getElementById('logTerminal').innerHTML = '';
+    liveLineCount = 0;
+    document.getElementById('liveCount').textContent = '0 Satır';
+}
+
+function escapeHtml(text) {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+// İlk yükleme
+loadDbLogs();
+// Her 30 saniyede DB loglarını yenile
+setInterval(loadDbLogs, 30000);
+</script>
+{% endblock %}
