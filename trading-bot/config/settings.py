@@ -197,6 +197,130 @@ class SignalConfig:
 
 
 # ============================================================
+# Gelişmiş Analiz Ayarları (Opsiyonel Modüller)
+# ============================================================
+@dataclass
+class AdvancedConfig:
+    """Tüm opsiyonel analiz modüllerinin ayarları."""
+
+    # ── Katman 4 (Gelişmiş İndikatörler) ──
+    layer4_enabled: bool = field(
+        default_factory=lambda: _env("LAYER4_ENABLED", True, bool)
+    )
+    layer4_strict: bool = field(
+        default_factory=lambda: _env("LAYER4_STRICT", False, bool)
+    )
+    # ATR tabanlı dinamik SL/TP
+    atr_sl_enabled: bool = field(
+        default_factory=lambda: _env("ATR_SL_ENABLED", True, bool)
+    )
+    atr_sl_multiplier: float = field(
+        default_factory=lambda: _env("ATR_SL_MULTIPLIER", 2.0, float)
+    )
+    atr_tp_multiplier: float = field(
+        default_factory=lambda: _env("ATR_TP_MULTIPLIER", 3.0, float)
+    )
+    chandelier_period: int = field(
+        default_factory=lambda: _env("CHANDELIER_PERIOD", 22, int)
+    )
+    chandelier_multiplier: float = field(
+        default_factory=lambda: _env("CHANDELIER_MULTIPLIER", 3.0, float)
+    )
+
+    # ── Kelly Kriteri ──
+    kelly_enabled: bool = field(
+        default_factory=lambda: _env("KELLY_ENABLED", False, bool)
+    )
+    kelly_fraction: float = field(
+        default_factory=lambda: _env("KELLY_FRACTION", 0.25, float)
+    )
+    kelly_min_trades: int = field(
+        default_factory=lambda: _env("KELLY_MIN_TRADES", 10, int)
+    )
+
+    # ── Order Book ──
+    orderbook_enabled: bool = field(
+        default_factory=lambda: _env("ORDERBOOK_ENABLED", True, bool)
+    )
+    orderbook_depth: int = field(
+        default_factory=lambda: _env("ORDERBOOK_DEPTH", 20, int)
+    )
+
+    # ── Open Interest ──
+    oi_enabled: bool = field(
+        default_factory=lambda: _env("OI_ENABLED", True, bool)
+    )
+
+    # ── Fear & Greed ──
+    fear_greed_enabled: bool = field(
+        default_factory=lambda: _env("FEAR_GREED_ENABLED", True, bool)
+    )
+
+    # ── On-Chain (Glassnode) - Opsiyonel ──
+    glassnode_enabled: bool = field(
+        default_factory=lambda: bool(_env("GLASSNODE_API_KEY", ""))
+    )
+    glassnode_api_key: str = field(
+        default_factory=lambda: _env("GLASSNODE_API_KEY", "")
+    )
+
+    # ── CryptoQuant - Opsiyonel ──
+    cryptoquant_enabled: bool = field(
+        default_factory=lambda: bool(_env("CRYPTOQUANT_API_KEY", ""))
+    )
+    cryptoquant_api_key: str = field(
+        default_factory=lambda: _env("CRYPTOQUANT_API_KEY", "")
+    )
+
+    # ── Whale Analizi ──
+    whale_enabled: bool = field(
+        default_factory=lambda: _env("WHALE_ENABLED", True, bool)
+    )
+    whale_min_usdt: float = field(
+        default_factory=lambda: _env("WHALE_MIN_USDT", 500000.0, float)
+    )
+
+    # ── ML Katmanı - Opsiyonel ──
+    ml_enabled: bool = field(
+        default_factory=lambda: _env("ML_ENABLED", False, bool)
+    )
+
+    # ── Sentiment Katmanı - Opsiyonel ──
+    sentiment_enabled: bool = field(
+        default_factory=lambda: _env("SENTIMENT_ENABLED", False, bool)
+    )
+    # Twitter
+    twitter_bearer_token: str = field(
+        default_factory=lambda: _env("TWITTER_BEARER_TOKEN", "")
+    )
+    # Reddit
+    reddit_client_id: str = field(
+        default_factory=lambda: _env("REDDIT_CLIENT_ID", "")
+    )
+    reddit_client_secret: str = field(
+        default_factory=lambda: _env("REDDIT_CLIENT_SECRET", "")
+    )
+    # FinBERT (transformers)
+    finbert_enabled: bool = field(
+        default_factory=lambda: _env("FINBERT_ENABLED", False, bool)
+    )
+
+    # ── Ensemble Ayarları ──
+    layer5_enabled: bool = field(
+        default_factory=lambda: _env("LAYER5_ENABLED", True, bool)
+    )
+    ensemble_min_confidence: float = field(
+        default_factory=lambda: _env("ENSEMBLE_MIN_CONFIDENCE", 40.0, float)
+    )
+    ensemble_direction_threshold: float = field(
+        default_factory=lambda: _env("ENSEMBLE_DIRECTION_THRESHOLD", 0.15, float)
+    )
+    ensemble_use_bayesian: bool = field(
+        default_factory=lambda: _env("ENSEMBLE_USE_BAYESIAN", True, bool)
+    )
+
+
+# ============================================================
 # Watchdog Ayarları
 # ============================================================
 @dataclass
@@ -258,6 +382,7 @@ class Settings:
         self.web = WebConfig()
         self.risk = RiskConfig()
         self.signal = SignalConfig()
+        self.advanced = AdvancedConfig()
         self.watchdog = WatchdogConfig()
         self.database = DatabaseConfig()
         self.log = LogConfig()
@@ -315,6 +440,20 @@ class Settings:
                     "enabled": cfg.enabled,
                 }
                 for sym, cfg in self.symbol_configs.items()
+            },
+            "advanced": {
+                "layer4_enabled": self.advanced.layer4_enabled,
+                "layer5_enabled": self.advanced.layer5_enabled,
+                "atr_sl_enabled": self.advanced.atr_sl_enabled,
+                "kelly_enabled": self.advanced.kelly_enabled,
+                "ml_enabled": self.advanced.ml_enabled,
+                "sentiment_enabled": self.advanced.sentiment_enabled,
+                "fear_greed_enabled": self.advanced.fear_greed_enabled,
+                "orderbook_enabled": self.advanced.orderbook_enabled,
+                "oi_enabled": self.advanced.oi_enabled,
+                "whale_enabled": self.advanced.whale_enabled,
+                "glassnode_enabled": self.advanced.glassnode_enabled,
+                "cryptoquant_enabled": self.advanced.cryptoquant_enabled,
             },
         }
 

@@ -33,6 +33,10 @@ from core.risk_manager import RiskManager
 from core.executor import Executor
 from core.watchdog import Watchdog
 from core.ai_layer import AILayer
+from core.advanced_analysis import AdvancedAnalysisManager
+from core.ml_layer import MLLayer
+from core.sentiment import SentimentLayer
+from core.ensemble import EnsembleAggregator
 from notifications.telegram import TelegramNotifier
 from web.app import init_app, run_web_server
 
@@ -65,6 +69,9 @@ class BotController:
         self.ai_layer: Optional[AILayer] = None
         self.telegram: Optional[TelegramNotifier] = None
         self.scheduler: Optional[BackgroundScheduler] = None
+        self.ml_layer: Optional[MLLayer] = None
+        self.sentiment_layer: Optional[SentimentLayer] = None
+        self.ensemble_aggregator: Optional[EnsembleAggregator] = None
 
         # Ana sinyal döngüsü
         self._bot_thread: Optional[threading.Thread] = None
@@ -199,8 +206,30 @@ class BotController:
                 logger.info(f"Haber kara bölgesi aktif: {reason}. İşlem açılmıyor.")
                 return
 
-        # 4. Sinyal analizi
-        signal = self.signal_engine.analyze(symbol)
+        # 4. Sinyal analizi (AI rejimini geçir)
+        ai_regime = None
+        if self.ai_layer and self.ai_layer.enabled:
+            candles_for_regime = self.data_engine.kline_cache.get(
+                symbol,
+                self._get_interval_str(settings.signal.signal_timeframe)
+            )
+            try:
+                regime_result = self.ai_layer.analyze_market_regime(
+                    symbol, candles_for_regime,
+                    self.data_engine.get_funding_rate(symbol)
+                )
+                if regime_result.success:
+                    ai_regime = regime_result.data.get('regime')
+                    if not regime_result.data.get('should_trade', True):
+                        logger.info(
+                            f"{symbol} AI rejimi işlem öneriyor değil: "
+                            f"{regime_result.data.get('reason')}"
+                        )
+                        return
+            except Exception as e:
+                logger.debug(f"AI rejim analiz hatası: {e}")
+
+        signal = self.signal_engine.analyze(symbol, ai_regime=ai_regime)
 
         if not signal.approved:
             logger.debug(f"{symbol} sinyal ret: {signal.reject_reason}")
@@ -226,23 +255,7 @@ class BotController:
                     settings.risk.max_funding_rate_pct * 0.7
                 )
 
-        # 7. AI piyasa rejimi kontrolü
-        if self.ai_layer and self.ai_layer.enabled:
-            candles = self.data_engine.kline_cache.get(
-                symbol,
-                self._get_interval_str(settings.signal.signal_timeframe)
-            )
-            regime_result = self.ai_layer.analyze_market_regime(
-                symbol, candles, self.data_engine.get_funding_rate(symbol)
-            )
-            if regime_result.success and not regime_result.data.get("should_trade", True):
-                logger.info(
-                    f"{symbol} AI piyasa rejimi işlem öneriyor değil: "
-                    f"{regime_result.data.get('reason')}"
-                )
-                return
-
-        # 8. İşlem aç
+        # 7. İşlem aç
         logger.info(
             f"[SINYAL ONAYLANDI] {symbol} {signal.direction.value} "
             f"güç={signal.strength.value} fiyat={current_price}"
@@ -436,14 +449,47 @@ def initialize() -> BotController:
     # 9. Risk Manager
     risk_manager = RiskManager(settings, data_engine, db)
 
-    # 10. Sinyal Motoru
+    # 10. Gelişmiş Analiz Modülleri (opsiyonel)
+    adv_cfg = settings.advanced
+
+    advanced_manager = AdvancedAnalysisManager(
+        data_engine=data_engine,
+        orderbook_enabled=adv_cfg.orderbook_enabled,
+        oi_enabled=adv_cfg.oi_enabled,
+        fear_greed_enabled=adv_cfg.fear_greed_enabled,
+        glassnode_api_key=adv_cfg.glassnode_api_key if adv_cfg.glassnode_enabled else "",
+        cryptoquant_api_key=adv_cfg.cryptoquant_api_key if adv_cfg.cryptoquant_enabled else "",
+        whale_enabled=adv_cfg.whale_enabled,
+        whale_min_usdt=adv_cfg.whale_min_usdt,
+    )
+
+    ml_layer = None
+    if adv_cfg.ml_enabled:
+        ml_layer = MLLayer(settings=adv_cfg)
+        logger.info("ML katmanı başlatıldı.")
+
+    sentiment_layer = None
+    if adv_cfg.sentiment_enabled:
+        sentiment_layer = SentimentLayer(settings=adv_cfg)
+        logger.info("Sentiment katmanı başlatıldı.")
+
+    ensemble_aggregator = EnsembleAggregator(settings=adv_cfg)
+
+    # 11. Sinyal Motoru (5 katmanlı)
     signal_engine = SignalEngine(
         data_engine=data_engine,
         signal_config=settings.signal,
         max_funding_rate=settings.risk.max_funding_rate_pct,
+        advanced_manager=advanced_manager if adv_cfg.layer5_enabled else None,
+        ml_layer=ml_layer,
+        sentiment_layer=sentiment_layer,
+        ensemble_aggregator=ensemble_aggregator,
+        layer4_enabled=adv_cfg.layer4_enabled,
+        layer4_strict=adv_cfg.layer4_strict,
+        layer5_enabled=adv_cfg.layer5_enabled,
     )
 
-    # 11. Executor
+    # 12. Executor
     executor = Executor(
         settings=settings,
         data_engine=data_engine,
@@ -453,7 +499,7 @@ def initialize() -> BotController:
     )
     executor.start_monitoring()
 
-    # 12. Watchdog
+    # 13. Watchdog
     watchdog = Watchdog(
         data_engine=data_engine,
         telegram=telegram,
@@ -462,7 +508,7 @@ def initialize() -> BotController:
         reconnect_delay=settings.watchdog.reconnect_delay,
     )
 
-    # 13. Bot Kontrolcüsü
+    # 14. Bot Kontrolcüsü
     bot_controller = BotController()
     bot_controller.data_engine = data_engine
     bot_controller.signal_engine = signal_engine
@@ -471,13 +517,16 @@ def initialize() -> BotController:
     bot_controller.watchdog = watchdog
     bot_controller.ai_layer = ai_layer
     bot_controller.telegram = telegram
+    bot_controller.ml_layer = ml_layer
+    bot_controller.sentiment_layer = sentiment_layer
+    bot_controller.ensemble_aggregator = ensemble_aggregator
 
     # Watchdog'a referansları ver
     watchdog.executor = executor
     watchdog.bot_controller = bot_controller
     watchdog.start()
 
-    # 14. Web uygulamasını yapılandır
+    # 15. Web uygulamasını yapılandır
     init_app(
         settings=settings,
         data_engine=data_engine,
@@ -490,11 +539,11 @@ def initialize() -> BotController:
         bot_controller=bot_controller,
     )
 
-    # 15. Zamanlayıcı
+    # 16. Zamanlayıcı
     scheduler = setup_scheduler(bot_controller, db, telegram, ai_layer)
     bot_controller.scheduler = scheduler
 
-    # 16. Başlangıç bildirimi
+    # 17. Başlangıç bildirimi
     telegram.send_bot_started(settings.trading_symbols, settings.binance.testnet)
 
     logger.info("Tüm bileşenler başarıyla başlatıldı.")

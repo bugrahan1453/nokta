@@ -3,11 +3,14 @@ core/risk_manager.py
 Risk yönetimi modülü.
 Pozisyon büyüklüğü hesaplama, çift pozisyon kilidi,
 günlük kayıp limiti, kaldıraç doğrulama.
+Gelişmiş: ATR tabanlı dinamik SL/TP, Kelly kriteri, Chandelier Exit.
 """
 
 import threading
+import numpy as np
+import pandas as pd
 from datetime import date, datetime
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from config.settings import RiskConfig, Settings, SymbolConfig
 from core.data_engine import DataEngine
@@ -15,6 +18,51 @@ from database.db import DatabaseManager
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── ATR Hesaplama Yardımcısı ────────────────────────────────────────────────
+
+def _calc_atr(candles: List[dict], period: int = 14) -> Optional[float]:
+    """Mum listesinden ATR hesaplar."""
+    if not candles or len(candles) < period + 1:
+        return None
+    try:
+        df = pd.DataFrame(candles)
+        high = df['high'].astype(float)
+        low = df['low'].astype(float)
+        close = df['close'].astype(float)
+        tr = pd.concat([
+            high - low,
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs()
+        ], axis=1).max(axis=1)
+        atr = tr.ewm(span=period, adjust=False).mean()
+        return float(atr.iloc[-1])
+    except Exception:
+        return None
+
+
+def _calc_win_rate_avg_rr(trade_history: List[dict]) -> Tuple[float, float]:
+    """
+    İşlem geçmişinden win rate ve ortalama kazanç/kayıp oranı hesaplar.
+    Returns: (win_rate, avg_win_loss_ratio)
+    """
+    if not trade_history:
+        return 0.5, 1.5  # Varsayılan
+
+    wins = [t['pnl_usdt'] for t in trade_history if t.get('pnl_usdt', 0) > 0]
+    losses = [abs(t['pnl_usdt']) for t in trade_history if t.get('pnl_usdt', 0) < 0]
+
+    if not wins and not losses:
+        return 0.5, 1.5
+
+    win_rate = len(wins) / len(trade_history) if trade_history else 0.5
+
+    avg_win = sum(wins) / len(wins) if wins else 1.0
+    avg_loss = sum(losses) / len(losses) if losses else 1.0
+    avg_rr = avg_win / avg_loss if avg_loss > 0 else 1.5
+
+    return win_rate, avg_rr
 
 
 class RiskCheckResult:
@@ -230,9 +278,18 @@ class RiskManager:
         symbol: str,
         entry_price: float,
         direction: str,
+        candles: Optional[List[dict]] = None,
+        atr_sl_multiplier: float = 2.0,
+        atr_tp_multiplier: float = 3.0,
     ) -> Tuple[float, float]:
         """
         Stop-loss ve take-profit fiyatlarını hesaplar.
+        Eğer candles verilirse ATR tabanlı dinamik SL/TP kullanır.
+        Aksi halde konfigürasyondaki sabit yüzdeler kullanılır.
+
+        Args:
+            atr_sl_multiplier: ATR × bu çarpan = SL mesafesi
+            atr_tp_multiplier: ATR × bu çarpan = TP mesafesi
 
         Returns:
             (stop_loss_price, take_profit_price)
@@ -241,6 +298,45 @@ class RiskManager:
         if not sym_cfg:
             raise ValueError(f"{symbol} konfigürasyonu bulunamadı.")
 
+        exchange_info = self.data.get_exchange_info(symbol)
+        price_precision = 2
+        if exchange_info:
+            price_precision = exchange_info.get("price_precision", 2)
+
+        # ATR tabanlı dinamik SL/TP dene
+        use_atr = False
+        if candles and len(candles) >= 20:
+            atr_val = _calc_atr(candles, period=14)
+            if atr_val and atr_val > 0:
+                sl_dist = atr_val * atr_sl_multiplier
+                tp_dist = atr_val * atr_tp_multiplier
+
+                # SL çok dar değil mi? (en az %0.1 mesafe)
+                min_sl_pct = 0.001
+                if sl_dist / entry_price >= min_sl_pct:
+                    use_atr = True
+
+                    if direction == "LONG":
+                        stop_loss = entry_price - sl_dist
+                        take_profit = entry_price + tp_dist
+                    elif direction == "SHORT":
+                        stop_loss = entry_price + sl_dist
+                        take_profit = entry_price - tp_dist
+                    else:
+                        raise ValueError(f"Geçersiz yön: {direction}")
+
+                    stop_loss = round(stop_loss, price_precision)
+                    take_profit = round(take_profit, price_precision)
+
+                    sl_pct = sl_dist / entry_price * 100
+                    tp_pct = tp_dist / entry_price * 100
+                    logger.debug(
+                        f"{symbol} ATR SL/TP: SL={stop_loss} ({sl_pct:.2f}%), "
+                        f"TP={take_profit} ({tp_pct:.2f}%), ATR={atr_val:.4f}"
+                    )
+                    return stop_loss, take_profit
+
+        # Sabit yüzde tabanlı SL/TP (fallback veya ATR yoksa)
         sl_pct = sym_cfg.stop_loss_pct / 100.0
         tp_pct = sym_cfg.take_profit_pct / 100.0
 
@@ -253,14 +349,135 @@ class RiskManager:
         else:
             raise ValueError(f"Geçersiz yön: {direction}")
 
-        # Fiyat hassasiyetine göre yuvarlama
-        exchange_info = self.data.get_exchange_info(symbol)
-        if exchange_info:
-            price_precision = exchange_info.get("price_precision", 2)
-            stop_loss = round(stop_loss, price_precision)
-            take_profit = round(take_profit, price_precision)
+        stop_loss = round(stop_loss, price_precision)
+        take_profit = round(take_profit, price_precision)
 
         return stop_loss, take_profit
+
+    def calculate_chandelier_exit(
+        self,
+        candles: List[dict],
+        direction: str,
+        multiplier: float = 3.0,
+        period: int = 22,
+    ) -> Optional[float]:
+        """
+        Chandelier Exit trailing stop fiyatı hesaplar.
+        Trailing stop yönetimi için executor'a referans seviye sağlar.
+
+        LONG: Highest High - ATR × multiplier
+        SHORT: Lowest Low + ATR × multiplier
+
+        Returns: Chandelier exit fiyatı veya None
+        """
+        if not candles or len(candles) < period + 1:
+            return None
+        try:
+            df = pd.DataFrame(candles)
+            high = df['high'].astype(float)
+            low = df['low'].astype(float)
+            close = df['close'].astype(float)
+
+            tr = pd.concat([
+                high - low,
+                (high - close.shift()).abs(),
+                (low - close.shift()).abs()
+            ], axis=1).max(axis=1)
+            atr = tr.ewm(span=period, adjust=False).mean().iloc[-1]
+
+            if direction == "LONG":
+                highest_high = high.rolling(period).max().iloc[-1]
+                return round(float(highest_high - atr * multiplier), 6)
+            elif direction == "SHORT":
+                lowest_low = low.rolling(period).min().iloc[-1]
+                return round(float(lowest_low + atr * multiplier), 6)
+            return None
+        except Exception as e:
+            logger.debug(f"Chandelier Exit hesaplama hatası: {e}")
+            return None
+
+    def calculate_position_size_kelly(
+        self,
+        symbol: str,
+        entry_price: float,
+        leverage: int,
+        trade_history: Optional[List[dict]] = None,
+        kelly_fraction: float = 0.25,
+        min_pct: float = 0.5,
+        max_pct: float = 5.0,
+    ) -> Tuple[float, float]:
+        """
+        Kelly Kriteri ile pozisyon büyüklüğü hesaplar.
+        Güvenlik için fraksiyonel Kelly kullanır (varsayılan: %25).
+
+        Kelly formülü: f = (p × b - q) / b
+            p = win_rate, q = 1 - p
+            b = average win / average loss (ödül/risk oranı)
+
+        Args:
+            kelly_fraction: Kelly miktarının kullanılacak fraksiyonu (0.25 = %25 Kelly)
+            min_pct: Minimum pozisyon büyüklüğü (kasa %)
+            max_pct: Maksimum pozisyon büyüklüğü (kasa %)
+
+        Returns: (quantity, margin_usdt)
+        """
+        sym_cfg = self.settings.get_symbol_config(symbol)
+        if not sym_cfg:
+            raise ValueError(f"{symbol} için konfigürasyon bulunamadı.")
+
+        # Win rate ve ortalama kazanç/kayıp oranı
+        if trade_history and len(trade_history) >= 10:
+            win_rate, avg_rr = _calc_win_rate_avg_rr(trade_history)
+        else:
+            # Yeterli geçmiş yok → varsayılan veya config kullan
+            return self.calculate_position_size(symbol, entry_price, leverage)
+
+        # Kelly formülü
+        p = win_rate
+        q = 1 - p
+        b = avg_rr
+
+        kelly_f = (p * b - q) / b if b > 0 else 0
+
+        # Negatif Kelly → işlem açma
+        if kelly_f <= 0:
+            logger.info(f"{symbol} Kelly negatif ({kelly_f:.3f}) - config kullanılıyor")
+            return self.calculate_position_size(symbol, entry_price, leverage)
+
+        # Fraksiyonel Kelly
+        position_pct = kelly_f * kelly_fraction * 100  # yüzdeye çevir
+
+        # Sınırlama
+        position_pct = float(np.clip(position_pct, min_pct, max_pct))
+
+        logger.info(
+            f"{symbol} Kelly pozisyon: {position_pct:.2f}% "
+            f"(win_rate={win_rate:.2f}, avg_rr={avg_rr:.2f}, kelly={kelly_f:.3f})"
+        )
+
+        # Bakiye hesaplama
+        balance = self.data.get_futures_balance()
+        available_balance = balance.get("available", 0.0)
+        total_balance = balance.get("total", 0.0)
+
+        if total_balance <= 0:
+            raise ValueError("Bakiye sıfır veya negatif.")
+
+        margin_usdt = total_balance * (position_pct / 100.0)
+        margin_usdt = min(margin_usdt, available_balance * 0.95)
+
+        if margin_usdt <= 0:
+            raise ValueError("Yetersiz bakiye.")
+
+        notional_value = margin_usdt * leverage
+        quantity = notional_value / entry_price
+
+        exchange_info = self.data.get_exchange_info(symbol)
+        if exchange_info:
+            qty_precision = exchange_info.get("quantity_precision", 3)
+            quantity = round(quantity, qty_precision)
+
+        return quantity, margin_usdt
 
     # ----------------------------------------------------------------
     # Risk Kontrol Kapısı

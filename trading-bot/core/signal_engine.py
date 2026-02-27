@@ -1,16 +1,18 @@
 """
 core/signal_engine.py
-3 katmanlı sinyal üretme motoru.
-- Katman 1: EMA trend tespiti
-- Katman 2: RSI + MACD momentum
-- Katman 3: Hacim analizi + Funding rate
-Her katmanın onayı zorunlu (3/3 konsensüs).
+5 katmanlı sinyal üretme motoru + Ensemble.
+- Katman 1: EMA trend tespiti (zorunlu)
+- Katman 2: RSI + MACD momentum (zorunlu)
+- Katman 3: Hacim analizi + Funding rate (zorunlu)
+- Katman 4: BB, ATR, StochRSI, VWAP, Patterns, Divergence (opsiyonel filtre)
+- Katman 5: ML + Sentiment + On-Chain ensemble (tam opsiyonel)
+Her katmanın onayı yapılandırılabilir. Varsayılan: 3/3 zorunlu konsensüs.
 """
 
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -43,6 +45,7 @@ class LayerResult:
     direction: SignalDirection
     reason: str
     details: dict = field(default_factory=dict)
+    score: float = 0.0  # -1 ile +1, ensemble için
 
 
 @dataclass
@@ -55,6 +58,8 @@ class Signal:
     layer1: LayerResult = None
     layer2: LayerResult = None
     layer3: LayerResult = None
+    layer4: Optional[LayerResult] = None
+    layer5: Optional[LayerResult] = None
     # Meta bilgiler
     timestamp: datetime = field(default_factory=datetime.utcnow)
     signal_price: float = 0.0
@@ -63,8 +68,23 @@ class Signal:
     # Onaylı mı?
     approved: bool = False
     reject_reason: str = ""
+    # Ensemble skoru
+    ensemble_score: float = 0.0
+    ensemble_confidence: float = 0.0
+    market_regime: str = "unknown"
 
     def to_dict(self) -> dict:
+        def layer_dict(l):
+            if not l:
+                return None
+            return {
+                "approved": l.approved,
+                "direction": l.direction.value,
+                "reason": l.reason,
+                "details": l.details,
+                "score": round(l.score, 4),
+            }
+
         return {
             "symbol": self.symbol,
             "direction": self.direction.value,
@@ -74,25 +94,15 @@ class Signal:
             "signal_price": self.signal_price,
             "spread_pct": self.spread_pct,
             "funding_rate": self.funding_rate,
+            "ensemble_score": round(self.ensemble_score, 4),
+            "ensemble_confidence": round(self.ensemble_confidence, 2),
+            "market_regime": self.market_regime,
             "timestamp": self.timestamp.isoformat(),
-            "layer1": {
-                "approved": self.layer1.approved,
-                "direction": self.layer1.direction.value if self.layer1 else None,
-                "reason": self.layer1.reason if self.layer1 else None,
-                "details": self.layer1.details if self.layer1 else {},
-            } if self.layer1 else None,
-            "layer2": {
-                "approved": self.layer2.approved,
-                "direction": self.layer2.direction.value if self.layer2 else None,
-                "reason": self.layer2.reason if self.layer2 else None,
-                "details": self.layer2.details if self.layer2 else {},
-            } if self.layer2 else None,
-            "layer3": {
-                "approved": self.layer3.approved,
-                "direction": self.layer3.direction.value if self.layer3 else None,
-                "reason": self.layer3.reason if self.layer3 else None,
-                "details": self.layer3.details if self.layer3 else {},
-            } if self.layer3 else None,
+            "layer1": layer_dict(self.layer1),
+            "layer2": layer_dict(self.layer2),
+            "layer3": layer_dict(self.layer3),
+            "layer4": layer_dict(self.layer4),
+            "layer5": layer_dict(self.layer5),
         }
 
 
@@ -105,21 +115,18 @@ def _candles_to_df(candles: List[dict]) -> pd.DataFrame:
     if not candles:
         return pd.DataFrame()
     df = pd.DataFrame(candles)
-    df["close"] = df["close"].astype(float)
-    df["open"] = df["open"].astype(float)
-    df["high"] = df["high"].astype(float)
-    df["low"] = df["low"].astype(float)
-    df["volume"] = df["volume"].astype(float)
+    for col in ["close", "open", "high", "low", "volume"]:
+        df[col] = df[col].astype(float)
+    if "taker_buy_volume" in df.columns:
+        df["taker_buy_volume"] = df["taker_buy_volume"].astype(float)
     return df
 
 
 def _ema(series: pd.Series, period: int) -> pd.Series:
-    """Exponential Moving Average hesaplar."""
     return series.ewm(span=period, adjust=False).mean()
 
 
 def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    """Relative Strength Index hesaplar."""
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -132,7 +139,6 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
 def _macd(
     series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
 ) -> Tuple[pd.Series, pd.Series, pd.Series]:
-    """MACD, sinyal ve histogram döndürür."""
     ema_fast = _ema(series, fast)
     ema_slow = _ema(series, slow)
     macd_line = ema_fast - ema_slow
@@ -146,14 +152,6 @@ def _macd(
 # ============================================================
 
 class Layer1EMA:
-    """
-    EMA 21 ve EMA 50 ile trend tespiti.
-    - EMA21 > EMA50: Yükselen trend (LONG sinyal)
-    - EMA21 < EMA50: Düşen trend (SHORT sinyal)
-    - Fiyat trend yönünde pozisyonlanmış olmalı
-    - 15dk trend onayı da alınır
-    """
-
     def __init__(self, config: SignalConfig):
         self.cfg = config
 
@@ -162,19 +160,12 @@ class Layer1EMA:
         signal_candles: List[dict],
         trend_candles: List[dict],
     ) -> LayerResult:
-        """
-        Trend analizini yapar.
-        signal_candles: 5dk mumlar (sinyal zaman dilimi)
-        trend_candles: 15dk mumlar (trend onay zaman dilimi)
-        """
         if len(signal_candles) < self.cfg.ema_slow + 5:
             return LayerResult(
-                approved=False,
-                direction=SignalDirection.NONE,
-                reason=f"Yetersiz veri: {len(signal_candles)} mum (min {self.cfg.ema_slow + 5} gerekli)",
+                approved=False, direction=SignalDirection.NONE,
+                reason=f"Yetersiz veri: {len(signal_candles)} mum",
             )
 
-        # Sinyal zaman dilimi analizi
         sig_df = _candles_to_df(signal_candles)
         sig_ema_fast = _ema(sig_df["close"], self.cfg.ema_fast)
         sig_ema_slow = _ema(sig_df["close"], self.cfg.ema_slow)
@@ -182,10 +173,6 @@ class Layer1EMA:
         last_ema_fast = sig_ema_fast.iloc[-1]
         last_ema_slow = sig_ema_slow.iloc[-1]
         last_close = sig_df["close"].iloc[-1]
-
-        # EMA kesişimi tespiti (son 2 mum)
-        prev_ema_fast = sig_ema_fast.iloc[-2]
-        prev_ema_slow = sig_ema_slow.iloc[-2]
 
         # Trend zaman dilimi onayı
         trend_direction = SignalDirection.NONE
@@ -198,31 +185,30 @@ class Layer1EMA:
             elif tr_ema_fast.iloc[-1] < tr_ema_slow.iloc[-1]:
                 trend_direction = SignalDirection.SHORT
 
-        # Sinyal yönünü belirle
         if last_ema_fast > last_ema_slow:
             signal_direction = SignalDirection.LONG
-            # Fiyat EMA'nın üzerinde mi?
-            price_above_ema = last_close > last_ema_fast
+            price_ok = last_close > last_ema_fast
         elif last_ema_fast < last_ema_slow:
             signal_direction = SignalDirection.SHORT
-            price_above_ema = last_close < last_ema_fast
+            price_ok = last_close < last_ema_fast
         else:
             return LayerResult(
-                approved=False,
-                direction=SignalDirection.NONE,
+                approved=False, direction=SignalDirection.NONE,
                 reason="EMA'lar eşit - belirsiz trend",
             )
 
-        # Trend onayı kontrolü
         trend_confirmed = (
             trend_direction == SignalDirection.NONE
             or trend_direction == signal_direction
         )
+        ema_sep = abs(last_ema_fast - last_ema_slow) / last_ema_slow * 100
+        approved = price_ok and trend_confirmed
 
-        # EMA ayrışma gücü (%)
-        ema_separation = abs(last_ema_fast - last_ema_slow) / last_ema_slow * 100
-
-        approved = price_above_ema and trend_confirmed
+        # Score: EMA ayrışması + trend onayı
+        score = (0.5 if signal_direction == SignalDirection.LONG else -0.5)
+        if trend_confirmed:
+            score *= 1.3
+        score = float(np.clip(score, -1, 1))
 
         return LayerResult(
             approved=approved,
@@ -231,17 +217,18 @@ class Layer1EMA:
                 f"EMA{self.cfg.ema_fast}={'%.2f' % last_ema_fast} "
                 f"{'>' if last_ema_fast > last_ema_slow else '<'} "
                 f"EMA{self.cfg.ema_slow}={'%.2f' % last_ema_slow}, "
-                f"Trend onayı: {'✓' if trend_confirmed else '✗'}, "
-                f"Fiyat EMA yönünde: {'✓' if price_above_ema else '✗'}"
+                f"Trend: {'✓' if trend_confirmed else '✗'}, "
+                f"Fiyat: {'✓' if price_ok else '✗'}"
             ),
             details={
                 "ema_fast": round(last_ema_fast, 4),
                 "ema_slow": round(last_ema_slow, 4),
-                "ema_separation_pct": round(ema_separation, 4),
-                "price_above_ema": price_above_ema,
+                "ema_separation_pct": round(ema_sep, 4),
+                "price_above_ema": price_ok,
                 "trend_direction": trend_direction.value,
                 "trend_confirmed": trend_confirmed,
             },
+            score=score,
         )
 
 
@@ -250,84 +237,64 @@ class Layer1EMA:
 # ============================================================
 
 class Layer2Momentum:
-    """
-    RSI(14) ve MACD momentum analizi.
-    - LONG: RSI < aşırı satım değilse (30-70) ve MACD pozitif
-    - SHORT: RSI > aşırı alım değilse (30-70) ve MACD negatif
-    - Divergence algılama (bonus güç)
-    """
-
     def __init__(self, config: SignalConfig):
         self.cfg = config
 
     def analyze(
         self, candles: List[dict], direction: SignalDirection
     ) -> LayerResult:
-        """Momentum analizini yapar."""
         if len(candles) < self.cfg.macd_slow + self.cfg.macd_signal + 5:
             return LayerResult(
-                approved=False,
-                direction=SignalDirection.NONE,
+                approved=False, direction=SignalDirection.NONE,
                 reason="MACD için yetersiz veri",
             )
 
         df = _candles_to_df(candles)
         closes = df["close"]
 
-        # RSI
         rsi = _rsi(closes, self.cfg.rsi_period)
         last_rsi = rsi.iloc[-1]
         prev_rsi = rsi.iloc[-2]
 
-        # MACD
         macd_line, signal_line, histogram = _macd(
-            closes,
-            self.cfg.macd_fast,
-            self.cfg.macd_slow,
-            self.cfg.macd_signal,
+            closes, self.cfg.macd_fast, self.cfg.macd_slow, self.cfg.macd_signal
         )
-        last_macd = macd_line.iloc[-1]
-        last_signal = signal_line.iloc[-1]
         last_hist = histogram.iloc[-1]
         prev_hist = histogram.iloc[-2]
 
-        # MACD kesişimi tespiti
-        macd_bullish_cross = prev_hist < 0 and last_hist > 0  # Negatiften pozitife
-        macd_bearish_cross = prev_hist > 0 and last_hist < 0  # Pozitiften negatife
+        macd_bullish_cross = prev_hist < 0 and last_hist > 0
+        macd_bearish_cross = prev_hist > 0 and last_hist < 0
 
-        # LONG onay koşulları
         if direction == SignalDirection.LONG:
             rsi_ok = self.cfg.rsi_oversold < last_rsi < self.cfg.rsi_overbought
             macd_ok = last_hist > 0 or macd_bullish_cross
-            rsi_trending_up = last_rsi > prev_rsi
-            approved = rsi_ok and macd_ok
-            reject_reason = []
+            reject = []
             if not rsi_ok:
-                if last_rsi <= self.cfg.rsi_oversold:
-                    reject_reason.append(f"RSI aşırı satımda ({last_rsi:.1f})")
-                else:
-                    reject_reason.append(f"RSI aşırı alımda ({last_rsi:.1f})")
+                reject.append(f"RSI={last_rsi:.1f}")
             if not macd_ok:
-                reject_reason.append(f"MACD negatif ({last_hist:.4f})")
-
-        # SHORT onay koşulları
+                reject.append(f"MACD_hist={last_hist:.4f}")
         elif direction == SignalDirection.SHORT:
             rsi_ok = self.cfg.rsi_oversold < last_rsi < self.cfg.rsi_overbought
             macd_ok = last_hist < 0 or macd_bearish_cross
-            rsi_trending_up = last_rsi < prev_rsi
-            approved = rsi_ok and macd_ok
-            reject_reason = []
+            reject = []
             if not rsi_ok:
-                reject_reason.append(f"RSI uygun değil ({last_rsi:.1f})")
+                reject.append(f"RSI={last_rsi:.1f}")
             if not macd_ok:
-                reject_reason.append(f"MACD pozitif ({last_hist:.4f})")
-
+                reject.append(f"MACD_hist={last_hist:.4f}")
         else:
             return LayerResult(
-                approved=False,
-                direction=SignalDirection.NONE,
-                reason="Yön belirsiz - Katman 1 onayı yok",
+                approved=False, direction=SignalDirection.NONE,
+                reason="Yön belirsiz",
             )
+
+        approved = rsi_ok and macd_ok
+
+        # Score: RSI yönü + MACD kesişim
+        rsi_norm = (last_rsi - 50) / 50  # -1 to +1
+        score = rsi_norm if direction == SignalDirection.LONG else -rsi_norm
+        if macd_bullish_cross or macd_bearish_cross:
+            score = np.clip(score * 1.5, -1, 1)
+        score = float(score)
 
         return LayerResult(
             approved=approved,
@@ -335,17 +302,18 @@ class Layer2Momentum:
             reason=(
                 f"RSI={last_rsi:.1f} ({'✓' if rsi_ok else '✗'}), "
                 f"MACD_hist={last_hist:.4f} ({'✓' if macd_ok else '✗'})"
-                + (f" | Ret: {', '.join(reject_reason)}" if reject_reason else "")
+                + (f" | Ret: {', '.join(reject)}" if reject else "")
             ),
             details={
                 "rsi": round(last_rsi, 2),
                 "rsi_previous": round(prev_rsi, 2),
-                "macd_line": round(last_macd, 4),
-                "macd_signal": round(last_signal, 4),
+                "macd_line": round(macd_line.iloc[-1], 4),
+                "macd_signal": round(signal_line.iloc[-1], 4),
                 "macd_histogram": round(last_hist, 4),
                 "macd_bullish_cross": macd_bullish_cross,
                 "macd_bearish_cross": macd_bearish_cross,
             },
+            score=score,
         )
 
 
@@ -354,13 +322,6 @@ class Layer2Momentum:
 # ============================================================
 
 class Layer3Volume:
-    """
-    Hacim analizi ve funding rate kontrolü.
-    - Hacim, N mumun ortalamasının üzerinde olmalı (threshold)
-    - Taker buy/sell oranı yönü desteklemeli
-    - Funding rate sınır içinde olmalı
-    """
-
     def __init__(self, config: SignalConfig, max_funding_rate: float = 0.1):
         self.cfg = config
         self.max_funding_rate = max_funding_rate
@@ -371,30 +332,23 @@ class Layer3Volume:
         direction: SignalDirection,
         funding_rate: float,
     ) -> LayerResult:
-        """Hacim ve funding rate analizini yapar."""
         if len(candles) < self.cfg.volume_lookback + 2:
             return LayerResult(
-                approved=False,
-                direction=SignalDirection.NONE,
-                reason=f"Hacim analizi için yetersiz veri",
+                approved=False, direction=SignalDirection.NONE,
+                reason="Hacim analizi için yetersiz veri",
             )
 
         df = _candles_to_df(candles)
-
-        # Hacim ortalaması (son N mum)
         avg_volume = df["volume"].iloc[-(self.cfg.volume_lookback + 1):-1].mean()
         last_volume = df["volume"].iloc[-1]
-
         volume_ratio = last_volume / avg_volume if avg_volume > 0 else 0
         volume_ok = volume_ratio >= self.cfg.volume_threshold
 
-        # Taker buy/sell oranı (son mum)
-        last_taker_buy = df["taker_buy_volume"].iloc[-1]
-        taker_sell = last_volume - last_taker_buy
-        taker_ratio = last_taker_buy / last_volume if last_volume > 0 else 0.5
+        taker_ratio = 0.5
+        if "taker_buy_volume" in df.columns:
+            last_taker_buy = df["taker_buy_volume"].iloc[-1]
+            taker_ratio = last_taker_buy / last_volume if last_volume > 0 else 0.5
 
-        # LONG: Alıcı baskısı yüksek olmalı (taker_ratio > 0.5)
-        # SHORT: Satıcı baskısı yüksek olmalı (taker_ratio < 0.5)
         if direction == SignalDirection.LONG:
             taker_ok = taker_ratio > 0.5
         elif direction == SignalDirection.SHORT:
@@ -402,33 +356,22 @@ class Layer3Volume:
         else:
             taker_ok = False
 
-        # Funding rate kontrolü
-        # Pozitif funding rate: long pozisyon tutucular ödeme yapar
-        # Negatif funding rate: short pozisyon tutucular ödeme yapar
-        funding_abs = abs(funding_rate)
-        funding_ok = funding_abs <= self.max_funding_rate
-
-        # Funding rate yönü kontrolü (tersi yönde yüksek funding dezavantaj)
-        funding_against = False
-        if direction == SignalDirection.LONG and funding_rate > self.max_funding_rate * 0.5:
-            funding_against = True
-        elif direction == SignalDirection.SHORT and funding_rate < -self.max_funding_rate * 0.5:
-            funding_against = True
-
-        # Onay: hacim yeterliyse taker oranı yönü desteklemiyor olsa bile geç
-        # Ama funding limit aşıldıysa ret
+        funding_ok = abs(funding_rate) <= self.max_funding_rate
         approved = volume_ok and funding_ok
-        # Taker oranı zayıf bir indikatör olarak kabul et (bonus)
 
-        reject_reasons = []
+        reject = []
         if not volume_ok:
-            reject_reasons.append(
-                f"Hacim yetersiz ({volume_ratio:.2f}x < {self.cfg.volume_threshold}x)"
-            )
+            reject.append(f"Hacim={volume_ratio:.2f}x < {self.cfg.volume_threshold}x")
         if not funding_ok:
-            reject_reasons.append(
-                f"Funding rate yüksek ({funding_rate:.4f}% > {self.max_funding_rate}%)"
-            )
+            reject.append(f"Funding={funding_rate:.4f}%")
+
+        # Score: hacim gücü + taker yönü
+        score = min(1.0, (volume_ratio - 1.0) / 2.0)
+        if not taker_ok:
+            score *= 0.5
+        if direction == SignalDirection.SHORT:
+            score = -score
+        score = float(np.clip(score, -1, 1))
 
         return LayerResult(
             approved=approved,
@@ -437,7 +380,7 @@ class Layer3Volume:
                 f"Hacim={volume_ratio:.2f}x ({'✓' if volume_ok else '✗'}), "
                 f"Taker={taker_ratio:.2f} ({'✓' if taker_ok else 'zayıf'}), "
                 f"Funding={funding_rate:.4f}% ({'✓' if funding_ok else '✗'})"
-                + (f" | Ret: {', '.join(reject_reasons)}" if reject_reasons else "")
+                + (f" | Ret: {', '.join(reject)}" if reject else "")
             ),
             details={
                 "volume_ratio": round(volume_ratio, 3),
@@ -446,8 +389,316 @@ class Layer3Volume:
                 "taker_ok": taker_ok,
                 "funding_rate": round(funding_rate, 6),
                 "funding_ok": funding_ok,
-                "funding_against": funding_against,
             },
+            score=score,
+        )
+
+
+# ============================================================
+# Katman 4: Gelişmiş İndikatörler (Opsiyonel Filtre)
+# ============================================================
+
+class Layer4Advanced:
+    """
+    BB, ATR, StochRSI, VWAP, Candlestick Patterns, RSI Divergence.
+    Bu katman sadece filtre olarak çalışır (veto hakkı var ama
+    konfigürasyona göre devre dışı bırakılabilir).
+    """
+
+    def __init__(self, enabled: bool = True, strict: bool = False):
+        self.enabled = enabled
+        self.strict = strict  # True: veto hakkı var; False: sadece skor etkiler
+
+        # Göstergeleri lazy import
+        self._indicators = None
+
+    def _get_indicators(self):
+        if self._indicators is None:
+            try:
+                import core.indicators as ind
+                self._indicators = ind
+            except ImportError:
+                logger.warning("core.indicators import edilemedi")
+        return self._indicators
+
+    def analyze(
+        self,
+        candles: List[dict],
+        direction: SignalDirection,
+    ) -> LayerResult:
+        if not self.enabled:
+            return LayerResult(
+                approved=True,
+                direction=direction,
+                reason="Katman 4 devre dışı",
+                score=0.0,
+            )
+
+        ind = self._get_indicators()
+        if ind is None:
+            return LayerResult(
+                approved=True,
+                direction=direction,
+                reason="Katman 4: indicators modülü yok",
+                score=0.0,
+            )
+
+        if len(candles) < 50:
+            return LayerResult(
+                approved=True,
+                direction=direction,
+                reason="Katman 4: Yetersiz veri (geçildi)",
+                score=0.0,
+            )
+
+        df = _candles_to_df(candles)
+        score_components = []
+        details = {}
+        veto = False
+        veto_reason = ""
+
+        try:
+            # ── Bollinger Bands ──────────────────────────────
+            try:
+                bb = ind.bollinger_bands(df['close'])
+                bb_sig = ind.bb_signal(bb, df['close'].iloc[-1])
+                if direction == SignalDirection.LONG:
+                    if bb_sig == 'BUY':
+                        score_components.append(0.7)
+                    elif bb_sig == 'SELL':
+                        score_components.append(-0.3)
+                    else:
+                        score_components.append(0.0)
+                elif direction == SignalDirection.SHORT:
+                    if bb_sig == 'SELL':
+                        score_components.append(0.7)
+                    elif bb_sig == 'BUY':
+                        score_components.append(-0.3)
+                    else:
+                        score_components.append(0.0)
+                details['bb_signal'] = bb_sig
+                details['bb_width'] = round(bb.width.iloc[-1] if hasattr(bb.width, 'iloc') else 0, 6)
+                details['bb_squeeze'] = bb.squeeze.iloc[-1] if hasattr(bb.squeeze, 'iloc') else False
+            except Exception as e:
+                logger.debug(f"BB hesaplama hatası: {e}")
+
+            # ── Stochastic RSI ───────────────────────────────
+            try:
+                stoch = ind.stochastic_rsi(df['close'])
+                stoch_sig = ind.stoch_rsi_signal(stoch)
+                if direction == SignalDirection.LONG:
+                    s = 0.5 if stoch_sig == 'BUY' else (-0.3 if stoch_sig == 'SELL' else 0.0)
+                else:
+                    s = 0.5 if stoch_sig == 'SELL' else (-0.3 if stoch_sig == 'BUY' else 0.0)
+                score_components.append(s)
+                details['stoch_rsi_signal'] = stoch_sig
+            except Exception as e:
+                logger.debug(f"StochRSI hesaplama hatası: {e}")
+
+            # ── VWAP ────────────────────────────────────────
+            try:
+                vwap_val = ind.vwap(df)
+                if vwap_val is not None:
+                    vwap_sig = ind.vwap_signal(df['close'].iloc[-1], vwap_val, df)
+                    if direction == SignalDirection.LONG:
+                        s = 0.4 if vwap_sig == 'ABOVE' else -0.4
+                    else:
+                        s = 0.4 if vwap_sig == 'BELOW' else -0.4
+                    score_components.append(s)
+                    details['vwap_signal'] = vwap_sig
+            except Exception as e:
+                logger.debug(f"VWAP hesaplama hatası: {e}")
+
+            # ── ATR Volatilite Filtresi ──────────────────────
+            try:
+                atr_val = ind.atr(df['high'], df['low'], df['close'])
+                atr_ratio = atr_val.iloc[-1] / df['close'].iloc[-1] if df['close'].iloc[-1] > 0 else 0
+                details['atr_ratio'] = round(atr_ratio, 6)
+                # Çok yüksek volatilite (>%5 ATR) veto
+                if self.strict and atr_ratio > 0.05:
+                    veto = True
+                    veto_reason = f"ATR çok yüksek (%{atr_ratio*100:.2f})"
+            except Exception as e:
+                logger.debug(f"ATR hesaplama hatası: {e}")
+
+            # ── Candlestick Patterns ─────────────────────────
+            try:
+                patterns = ind.detect_candle_patterns(df)
+                if patterns:
+                    bullish = sum(1 for p in patterns if p.bullish)
+                    bearish = sum(1 for p in patterns if not p.bullish)
+                    if direction == SignalDirection.LONG:
+                        s = min(0.8, bullish * 0.3 - bearish * 0.2)
+                    else:
+                        s = min(0.8, bearish * 0.3 - bullish * 0.2)
+                    score_components.append(s)
+                    details['patterns'] = [p.name for p in patterns]
+            except Exception as e:
+                logger.debug(f"Pattern hesaplama hatası: {e}")
+
+            # ── RSI Divergence ───────────────────────────────
+            try:
+                div = ind.rsi_divergence(df['close'], df['low'], df['high'])
+                if div:
+                    if direction == SignalDirection.LONG and div.bullish_divergence:
+                        score_components.append(0.6)
+                    elif direction == SignalDirection.SHORT and div.bearish_divergence:
+                        score_components.append(0.6)
+                    details['divergence'] = {
+                        'bullish': div.bullish_divergence,
+                        'bearish': div.bearish_divergence,
+                    }
+            except Exception as e:
+                logger.debug(f"Divergence hesaplama hatası: {e}")
+
+        except Exception as e:
+            logger.error(f"Katman 4 genel hata: {e}")
+
+        # Skor hesapla
+        if score_components:
+            final_score = float(np.mean(score_components))
+        else:
+            final_score = 0.0
+
+        # Veto durumu
+        if veto and self.strict:
+            return LayerResult(
+                approved=False,
+                direction=direction,
+                reason=f"Katman 4 VETO: {veto_reason}",
+                details=details,
+                score=final_score,
+            )
+
+        # Strict modda negatif skor veto'ya dönüşebilir
+        approved = True
+        if self.strict and final_score < -0.3:
+            approved = False
+            reason = f"Katman 4: Zayıf sinyal (skor={final_score:.2f})"
+        else:
+            reason = f"Katman 4 geçti (skor={final_score:.2f})"
+
+        return LayerResult(
+            approved=approved,
+            direction=direction,
+            reason=reason,
+            details=details,
+            score=final_score,
+        )
+
+
+# ============================================================
+# Katman 5: ML + Sentiment + Advanced Ensemble (Tam Opsiyonel)
+# ============================================================
+
+class Layer5Ensemble:
+    """
+    ML, Sentiment ve Advanced Analysis (OB, OI, Fear&Greed, On-Chain, Whale)
+    sonuçlarını ensemble ile birleştirir.
+    Bu katman asla veto yapmamalıdır - sadece skoru etkiler.
+    """
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        advanced_manager=None,
+        ml_layer=None,
+        sentiment_layer=None,
+        ensemble_aggregator=None,
+    ):
+        self.enabled = enabled
+        self.advanced = advanced_manager
+        self.ml = ml_layer
+        self.sentiment = sentiment_layer
+        self.ensemble = ensemble_aggregator
+
+    def analyze(
+        self,
+        symbol: str,
+        df,
+        direction: SignalDirection,
+        order_book: Optional[dict] = None,
+        ai_regime: Optional[str] = None,
+    ) -> LayerResult:
+        if not self.enabled:
+            return LayerResult(
+                approved=True, direction=direction,
+                reason="Katman 5 devre dışı", score=0.0,
+            )
+
+        from core.advanced_analysis import AnalysisResult
+
+        module_results: Dict[str, Any] = {}
+
+        # Advanced Analysis (OB, OI, Fear&Greed, On-Chain, Whale)
+        if self.advanced:
+            try:
+                adv = self.advanced.run_all(symbol, df, order_book)
+                module_results.update(adv)
+            except Exception as e:
+                logger.error(f"Advanced analysis hatası: {e}")
+
+        # ML Layer
+        if self.ml:
+            try:
+                ml_result = self.ml.predict(symbol, df)
+                if ml_result:
+                    module_results['ml_ensemble'] = ml_result
+            except Exception as e:
+                logger.error(f"ML katman hatası: {e}")
+
+        # Sentiment Layer
+        if self.sentiment:
+            try:
+                sent_result = self.sentiment.analyze(symbol)
+                if sent_result:
+                    module_results['sentiment_combined'] = sent_result
+            except Exception as e:
+                logger.error(f"Sentiment katman hatası: {e}")
+
+        if not module_results:
+            return LayerResult(
+                approved=True, direction=direction,
+                reason="Katman 5: Modül sonucu yok", score=0.0,
+            )
+
+        # Ensemble aggregasyon
+        if self.ensemble:
+            try:
+                ens_signal = self.ensemble.aggregate(
+                    module_results, df=df, ai_regime=ai_regime
+                )
+                score = ens_signal.score
+                reason = (
+                    f"Katman 5 ensemble: {ens_signal.direction} "
+                    f"(skor={ens_signal.score:.2f}, güven={ens_signal.confidence:.1f}%)"
+                )
+                details = ens_signal.to_dict()
+            except Exception as e:
+                logger.error(f"Ensemble hatası: {e}")
+                score = 0.0
+                reason = "Katman 5: Ensemble hata"
+                details = {}
+        else:
+            # Ensemble olmadan basit ortalama
+            scores = [r.score for r in module_results.values()
+                      if hasattr(r, 'score') and not np.isnan(r.score)]
+            score = float(np.mean(scores)) if scores else 0.0
+            reason = f"Katman 5 ort. skor: {score:.2f} ({len(scores)} modül)"
+            details = {'module_count': len(scores)}
+
+        # Yön uyumsuzluğunda skoru hafifçe cezalandır
+        if direction == SignalDirection.LONG and score < -0.3:
+            reason += " [UZUN uyumsuzluk]"
+        elif direction == SignalDirection.SHORT and score > 0.3:
+            reason += " [KISA uyumsuzluk]"
+
+        return LayerResult(
+            approved=True,  # Katman 5 hiçbir zaman veto yapmaz
+            direction=direction,
+            reason=reason,
+            details=details,
+            score=float(np.clip(score, -1, 1)),
         )
 
 
@@ -457,8 +708,8 @@ class Layer3Volume:
 
 class SignalEngine:
     """
-    3 katmanlı sinyal üretme motoru.
-    Her parite için bağımsız sinyal üretir.
+    5 katmanlı sinyal üretme motoru.
+    Katman 1-3 zorunlu, 4-5 opsiyonel.
     """
 
     def __init__(
@@ -466,54 +717,65 @@ class SignalEngine:
         data_engine: DataEngine,
         signal_config: SignalConfig,
         max_funding_rate: float = 0.1,
+        # Opsiyonel bileşenler
+        advanced_manager=None,
+        ml_layer=None,
+        sentiment_layer=None,
+        ensemble_aggregator=None,
+        layer4_enabled: bool = True,
+        layer4_strict: bool = False,
+        layer5_enabled: bool = True,
     ):
         self.data = data_engine
         self.cfg = signal_config
         self.max_funding_rate = max_funding_rate
 
-        # Katmanlar
+        # Zorunlu katmanlar
         self.layer1 = Layer1EMA(signal_config)
         self.layer2 = Layer2Momentum(signal_config)
         self.layer3 = Layer3Volume(signal_config, max_funding_rate)
 
-        # Son sinyal önbelleği (her parite için)
-        self._last_signals: Dict[str, Signal] = {}
+        # Opsiyonel katmanlar
+        self.layer4 = Layer4Advanced(
+            enabled=layer4_enabled,
+            strict=layer4_strict,
+        )
+        self.layer5 = Layer5Ensemble(
+            enabled=layer5_enabled,
+            advanced_manager=advanced_manager,
+            ml_layer=ml_layer,
+            sentiment_layer=sentiment_layer,
+            ensemble_aggregator=ensemble_aggregator,
+        )
 
-        # Sinyal geçmişi (son 50)
+        # Önbellek ve geçmiş
+        self._last_signals: Dict[str, Signal] = {}
         self._signal_history: List[Signal] = []
 
-        # Timeframe string dönüşümleri
         self._interval_map = {
             1: "1m", 3: "3m", 5: "5m", 15: "15m",
             30: "30m", 60: "1h", 120: "2h", 240: "4h",
         }
 
-        logger.info("SignalEngine başlatıldı.")
+        logger.info(
+            f"SignalEngine başlatıldı. Katman4:{layer4_enabled}(strict={layer4_strict}), "
+            f"Katman5:{layer5_enabled}"
+        )
 
     def _get_interval(self, minutes: int) -> str:
-        """Dakikayı Binance interval formatına çevirir."""
         return self._interval_map.get(minutes, f"{minutes}m")
 
-    def analyze(self, symbol: str) -> Signal:
-        """
-        Belirtilen parite için sinyal analizi yapar.
-        Tüm 3 katmanı çalıştırır ve konsensüs arar.
-        """
+    def analyze(self, symbol: str, ai_regime: Optional[str] = None) -> Signal:
+        """Belirtilen parite için 5 katmanlı sinyal analizi."""
         signal_interval = self._get_interval(self.cfg.signal_timeframe)
         trend_interval = self._get_interval(self.cfg.trend_timeframe)
 
-        # Mum verisi al
         signal_candles = self.data.kline_cache.get(symbol, signal_interval)
         trend_candles = self.data.kline_cache.get(symbol, trend_interval)
-
-        # Güncel fiyat ve funding rate
         current_price = self.data.price_cache.get(symbol) or 0.0
         funding_rate = self.data.get_funding_rate(symbol)
-
-        # Spread kontrolü
         spread_pct = self.data.get_spread(symbol)
 
-        # Temel sinyal nesnesi
         signal = Signal(
             symbol=symbol,
             direction=SignalDirection.NONE,
@@ -521,9 +783,10 @@ class SignalEngine:
             signal_price=current_price,
             spread_pct=spread_pct,
             funding_rate=funding_rate,
+            market_regime=ai_regime or 'unknown',
         )
 
-        # Spread limiti kontrolü
+        # Spread limiti
         if spread_pct > self.cfg.max_spread_pct:
             signal.approved = False
             signal.reject_reason = (
@@ -532,62 +795,98 @@ class SignalEngine:
             self._cache_signal(symbol, signal)
             return signal
 
-        # Yeterli mum verisi var mı?
+        # Veri kontrolü
         if len(signal_candles) < self.cfg.ema_slow + 10:
             signal.approved = False
             signal.reject_reason = f"Yetersiz veri: {len(signal_candles)} mum"
             self._cache_signal(symbol, signal)
             return signal
 
-        # ---- Katman 1: EMA Trend ----
+        # ── Katman 1: EMA ──
         l1 = self.layer1.analyze(signal_candles, trend_candles)
         signal.layer1 = l1
-
         if not l1.approved:
             signal.approved = False
-            signal.reject_reason = f"Katman 1 (EMA Trend) onaylamadı: {l1.reason}"
+            signal.reject_reason = f"K1(EMA): {l1.reason}"
             self._cache_signal(symbol, signal)
             return signal
 
         direction = l1.direction
         signal.direction = direction
 
-        # ---- Katman 2: RSI + MACD ----
+        # ── Katman 2: Momentum ──
         l2 = self.layer2.analyze(signal_candles, direction)
         signal.layer2 = l2
-
         if not l2.approved:
             signal.approved = False
-            signal.reject_reason = f"Katman 2 (Momentum) onaylamadı: {l2.reason}"
+            signal.reject_reason = f"K2(Momentum): {l2.reason}"
             self._cache_signal(symbol, signal)
             return signal
 
-        # ---- Katman 3: Hacim + Funding ----
+        # ── Katman 3: Hacim/Funding ──
         l3 = self.layer3.analyze(signal_candles, direction, funding_rate)
         signal.layer3 = l3
-
         if not l3.approved:
             signal.approved = False
-            signal.reject_reason = f"Katman 3 (Hacim/Funding) onaylamadı: {l3.reason}"
+            signal.reject_reason = f"K3(Hacim): {l3.reason}"
             self._cache_signal(symbol, signal)
             return signal
 
-        # ---- Tüm katmanlar onayladı! ----
+        # ── Katman 4: Gelişmiş İndikatörler ──
+        df = _candles_to_df(signal_candles)
+        l4 = self.layer4.analyze(signal_candles, direction)
+        signal.layer4 = l4
+        if not l4.approved:
+            signal.approved = False
+            signal.reject_reason = f"K4(Gelişmiş): {l4.reason}"
+            self._cache_signal(symbol, signal)
+            return signal
+
+        # ── Katman 5: ML + Sentiment + Advanced ──
+        order_book = None
+        try:
+            order_book = self.data.get_order_book(symbol)
+        except Exception:
+            pass
+
+        l5 = self.layer5.analyze(symbol, df, direction, order_book, ai_regime)
+        signal.layer5 = l5
+        # Katman 5 asla veto yapmaz, sadece ensemble skor etkiler
+
+        # ── Tüm zorunlu katmanlar onayladı ──
         signal.approved = True
 
-        # Sinyal gücü hesapla
-        signal.strength = self._calculate_strength(l1, l2, l3)
+        # Ensemble skoru hesapla
+        layer_scores = {
+            'layer1_ema': l1.score,
+            'layer2_momentum': l2.score,
+            'layer3_volume': l3.score,
+            'layer4_indicators': l4.score,
+        }
+        if l5.score != 0:
+            layer_scores['layer5_ensemble'] = l5.score
+
+        # Ensemble skoru varsa kullan, yoksa katman ortalama
+        if l5.details and 'score' in l5.details:
+            signal.ensemble_score = l5.details['score']
+            signal.ensemble_confidence = l5.details.get('confidence', 50.0)
+        else:
+            signal.ensemble_score = float(np.mean(list(layer_scores.values())))
+            signal.ensemble_confidence = 50.0
+
+        signal.strength = self._calculate_strength(l1, l2, l3, l4, l5)
 
         logger.info(
             f"[SINYAL] {symbol} {direction.value} | "
             f"Güç: {signal.strength.value} | "
-            f"Fiyat: {current_price} | "
-            f"Spread: {spread_pct:.3f}%"
+            f"Ensemble: {signal.ensemble_score:.3f} | "
+            f"Rejim: {signal.market_regime} | "
+            f"Fiyat: {current_price}"
         )
 
         self._cache_signal(symbol, signal)
         self._signal_history.append(signal)
-        if len(self._signal_history) > 50:
+        if len(self._signal_history) > 100:
             self._signal_history.pop(0)
 
         return signal
@@ -597,72 +896,75 @@ class SignalEngine:
         l1: LayerResult,
         l2: LayerResult,
         l3: LayerResult,
+        l4: Optional[LayerResult] = None,
+        l5: Optional[LayerResult] = None,
     ) -> SignalStrength:
-        """Sinyal gücünü 3 katman detaylarına göre hesaplar."""
         score = 0
 
-        # Katman 1: EMA ayrışma gücü
+        # Katman 1 katkısı
         ema_sep = l1.details.get("ema_separation_pct", 0)
         if ema_sep > 0.5:
             score += 2
         elif ema_sep > 0.2:
             score += 1
-
-        # Trend onayı
         if l1.details.get("trend_confirmed"):
             score += 1
 
-        # Katman 2: RSI orta bölgede
+        # Katman 2 katkısı
         rsi = l2.details.get("rsi", 50)
         if 40 <= rsi <= 60:
             score += 2
         elif 35 <= rsi <= 65:
             score += 1
-
-        # MACD kesişimi (çok güçlü sinyal)
         if l2.details.get("macd_bullish_cross") or l2.details.get("macd_bearish_cross"):
             score += 2
 
-        # Katman 3: Hacim oranı
+        # Katman 3 katkısı
         vol_ratio = l3.details.get("volume_ratio", 1.0)
         if vol_ratio >= 2.0:
             score += 2
         elif vol_ratio >= 1.5:
             score += 1
-
-        # Taker oranı yönü destekliyor
         if l3.details.get("taker_ok"):
             score += 1
-
-        # Funding rate düşük
         if abs(l3.details.get("funding_rate", 0)) < 0.05:
             score += 1
 
-        if score >= 8:
+        # Katman 4 katkısı (opsiyonel)
+        if l4 and l4.score > 0.3:
+            score += 2
+        elif l4 and l4.score > 0:
+            score += 1
+
+        # Katman 5 katkısı (opsiyonel)
+        if l5 and abs(l5.score) > 0.5:
+            score += 2
+        elif l5 and abs(l5.score) > 0.2:
+            score += 1
+
+        if score >= 10:
             return SignalStrength.STRONG
-        elif score >= 5:
+        elif score >= 6:
             return SignalStrength.MEDIUM
         else:
             return SignalStrength.WEAK
 
     def _cache_signal(self, symbol: str, signal: Signal):
-        """Sinyal önbelleğini günceller."""
         self._last_signals[symbol] = signal
 
     def get_last_signal(self, symbol: str) -> Optional[Signal]:
-        """Son sinyal sonucunu döndürür."""
         return self._last_signals.get(symbol)
 
     def get_signal_history(self, limit: int = 20) -> List[dict]:
-        """Son sinyallerin geçmişini döndürür."""
         return [s.to_dict() for s in self._signal_history[-limit:]]
 
-    def analyze_all(self, symbols: List[str]) -> Dict[str, Signal]:
-        """Tüm pariteler için sinyal analizi yapar."""
+    def analyze_all(
+        self, symbols: List[str], ai_regime: Optional[str] = None
+    ) -> Dict[str, Signal]:
         results = {}
         for symbol in symbols:
             try:
-                results[symbol] = self.analyze(symbol)
+                results[symbol] = self.analyze(symbol, ai_regime=ai_regime)
             except Exception as e:
                 logger.error(f"{symbol} sinyal analiz hatası: {e}")
         return results

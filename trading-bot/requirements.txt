@@ -63,3 +63,41 @@ loguru==0.7.2
 
 # --- Sistem ---
 psutil==5.9.7
+
+# ============================================================
+# OPSİYONEL BAĞIMLILIKLAR
+# Sadece ihtiyaç duyduğunuz modüller için kurun.
+# ============================================================
+
+# --- RSS & Haber Okuma (CryptoPanic - ücretsiz, opsiyonel) ---
+# pip install feedparser>=6.0.10
+
+# --- Duygu Analizi (Temel - ücretsiz) ---
+# vaderSentiment - kripto/sosyal medya için optimize VADER
+# pip install vaderSentiment>=3.3.2
+# TextBlob - genel duygu analizi
+# pip install textblob
+
+# --- Twitter/X API (opsiyonel) ---
+# Gereksinim: Twitter Developer hesabı + Bearer Token
+# pip install tweepy>=4.14.0
+
+# --- Reddit API (opsiyonel) ---
+# Gereksinim: Reddit uygulama client_id + client_secret
+# pip install praw>=7.7.1
+
+# --- FinBERT - Finansal Duygu Analizi (opsiyonel, ~400MB) ---
+# pip install transformers>=4.36.0 torch>=2.1.0
+
+# --- Makine Öğrenmesi (opsiyonel) ---
+# XGBoost
+# pip install xgboost>=2.0.3
+# LightGBM
+# pip install lightgbm>=4.2.0
+# scikit-learn (XGBoost/LightGBM ile birlikte)
+# pip install scikit-learn>=1.3.2
+# PyTorch - LSTM modeli için (opsiyonel, ~2GB)
+# pip install torch>=2.1.0
+
+# --- Tüm ML paketlerini bir arada kurmak için ---
+# pip install xgboost lightgbm scikit-learn  (LSTM için: + torch)
