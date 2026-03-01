@@ -167,6 +167,7 @@ class BotController:
         if not self.signal_engine or not self.risk_manager or not self.executor:
             return
 
+        logger.info(f"[TARAMA] {', '.join(settings.trading_symbols)} analiz ediliyor...")
         for symbol in settings.trading_symbols:
             try:
                 self._analyze_symbol(symbol)
@@ -232,7 +233,7 @@ class BotController:
         signal = self.signal_engine.analyze(symbol, ai_regime=ai_regime)
 
         if not signal.approved:
-            logger.debug(f"{symbol} sinyal ret: {signal.reject_reason}")
+            logger.info(f"[RET] {symbol} | {signal.reject_reason}")
             return
 
         # 5. Risk kontrolü
@@ -241,7 +242,7 @@ class BotController:
         )
 
         if not risk_check.approved:
-            logger.debug(f"{symbol} risk ret: {risk_check.reason}")
+            logger.info(f"[RİSK RET] {symbol} | {risk_check.reason}")
             return
 
         # 6. Funding rate uyarısı
