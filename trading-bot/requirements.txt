@@ -45,7 +45,7 @@ pydantic-settings>=2.6.0
 
 # --- HTTP ---
 requests==2.31.0
-httpx==0.26.0
+httpx==0.25.2
 urllib3==2.1.0
 
 # --- Yardımcı ---
