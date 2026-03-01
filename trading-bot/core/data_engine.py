@@ -379,7 +379,7 @@ class DataEngine:
 
     def get_spread(self, symbol: str) -> float:
         """Ask-bid spreadini yüzde olarak döndürür."""
-        ob = self.get_order_book(symbol, limit=1)
+        ob = self.get_order_book(symbol, limit=5)
         if not ob["bids"] or not ob["asks"]:
             return 999.0
         best_bid = ob["bids"][0][0]
