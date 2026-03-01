@@ -633,7 +633,8 @@ class Layer5Ensemble:
         # Advanced Analysis (OB, OI, Fear&Greed, On-Chain, Whale)
         if self.advanced:
             try:
-                adv = self.advanced.run_all(symbol, df, order_book)
+                current_price = float(df['close'].iloc[-1]) if df is not None and len(df) > 0 else 0.0
+                adv = self.advanced.run_all(symbol, direction.value, current_price)
                 module_results.update(adv)
             except Exception as e:
                 logger.error(f"Advanced analysis hatası: {e}")

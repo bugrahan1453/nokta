@@ -454,13 +454,7 @@ def initialize() -> BotController:
 
     advanced_manager = AdvancedAnalysisManager(
         data_engine=data_engine,
-        orderbook_enabled=adv_cfg.orderbook_enabled,
-        oi_enabled=adv_cfg.oi_enabled,
-        fear_greed_enabled=adv_cfg.fear_greed_enabled,
-        glassnode_api_key=adv_cfg.glassnode_api_key if adv_cfg.glassnode_enabled else "",
-        cryptoquant_api_key=adv_cfg.cryptoquant_api_key if adv_cfg.cryptoquant_enabled else "",
-        whale_enabled=adv_cfg.whale_enabled,
-        whale_min_usdt=adv_cfg.whale_min_usdt,
+        settings=settings,
     )
 
     ml_layer = None
