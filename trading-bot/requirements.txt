@@ -8,10 +8,10 @@ python-binance==1.0.19
 binance-futures-connector==3.3.0
 
 # --- Teknik Analiz ---
-pandas==2.1.4
+numpy>=1.26.4          # pandas'tan önce kurulmalı
+pandas>=2.1.4
 pandas-ta>=0.3.14b
-numpy==1.26.4
-ta==0.11.0
+ta>=0.11.0
 
 # --- Web Çerçevesi ---
 flask==3.0.0

@@ -101,14 +101,12 @@ def pip_install(pip, packages, label=""):
 def upgrade_pip(pip):
     """pip + setuptools + wheel'i güncelle (derleme hataları için şart)."""
     info("pip / setuptools / wheel güncelleniyor...")
-    result = subprocess.run(
-        [pip, "install", "--quiet", "--upgrade", "pip", "setuptools", "wheel"],
-        capture_output=True, text=True
-    )
-    if result.returncode == 0:
-        ok("pip araçları güncellendi")
-    else:
-        warn("pip güncellemesi kısmen başarısız, devam ediliyor")
+    for pkg in ["pip", "setuptools", "wheel"]:
+        subprocess.run(
+            [pip, "install", "--quiet", "--upgrade", pkg],
+            capture_output=True, text=True
+        )
+    ok("pip araçları güncellendi")
 
 
 def install_requirements():
@@ -142,6 +140,13 @@ def _install_one_by_one(pip):
     """requirements.txt satırlarını tek tek kur, başarısızları raporla."""
     failed = []
     req_lines = Path("requirements.txt").read_text(encoding="utf-8").splitlines()
+
+    # numpy her zaman önce kurulmalı — pandas ve pandas-ta buna bağlı
+    info("Önce numpy kuruluyor (bağımlılık sırası)...")
+    subprocess.run(
+        [pip, "install", "--quiet", "--prefer-binary", "--upgrade", "numpy"],
+        capture_output=True, text=True
+    )
 
     for line in req_lines:
         line = line.strip()
