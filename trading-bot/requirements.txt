@@ -78,12 +78,17 @@ psutil==5.9.7
 # TextBlob - genel duygu analizi
 # pip install textblob
 
-# --- Twitter/X API (opsiyonel) ---
-# Gereksinim: Twitter Developer hesabı + Bearer Token
+# --- Twitter/X ÜCRETLİ API (opsiyonel) ---
+# Gereksinim: Twitter Developer hesabı + Bearer Token (aylık $100+)
 # pip install tweepy>=4.14.0
 
+# --- Twitter/X ÜCRETSİZ SCRAPER (opsiyonel, önerilen) ---
+# Gereksinim: Sadece kendi Twitter hesabın (kullanıcı adı + şifre)
+# .env: TWITTER_SCRAPE_ENABLED=true, TWITTER_SCRAPE_USERNAME=..., TWITTER_SCRAPE_PASSWORD=...
+# pip install twscrape>=0.11.0
+
 # --- Reddit API (opsiyonel) ---
-# Gereksinim: Reddit uygulama client_id + client_secret
+# Gereksinim: https://www.reddit.com/prefs/apps → "script" uygulaması oluştur
 # pip install praw>=7.7.1
 
 # --- FinBERT - Finansal Duygu Analizi (opsiyonel, ~400MB) ---

@@ -47,6 +47,12 @@ except ImportError:
     logger.info("Tweepy kurulu değil. pip install tweepy")
 
 try:
+    import twscrape
+    TWSCRAPE_AVAILABLE = True
+except ImportError:
+    TWSCRAPE_AVAILABLE = False
+
+try:
     from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
     import torch
     FINBERT_AVAILABLE = True
@@ -380,6 +386,150 @@ class TwitterSentimentAnalyzer:
             return AnalysisResult.error(f'Twitter: {e}')
 
 
+# ── Twitter/X Ücretsiz Scraper (twscrape) ───────────────────────────────────
+
+class TwitterScrapeSentimentAnalyzer:
+    """
+    twscrape ile ücretsiz Twitter/X duygu analizi.
+    Twitter API anahtarı gerektirmez — kendi Twitter hesabını kullanır.
+    Kurulum: pip install twscrape
+    """
+
+    CACHE_TTL = 600  # 10 dakika
+
+    QUERY_MAP = {
+        'btc': 'bitcoin OR $BTC lang:en',
+        'eth': 'ethereum OR $ETH lang:en',
+        'bnb': '$BNB OR binance coin lang:en',
+        'sol': 'solana OR $SOL lang:en',
+        'xrp': 'ripple OR $XRP lang:en',
+        'ada': 'cardano OR $ADA lang:en',
+        'doge': 'dogecoin OR $DOGE lang:en',
+    }
+
+    def __init__(self, username: str, password: str, email: str = '',
+                 finbert: Optional[FinBERTAnalyzer] = None):
+        self.enabled = False
+        self._api = None
+        self.finbert = finbert
+        self.vader = SentimentIntensityAnalyzer() if VADER_AVAILABLE else None
+        self._cache: Dict[str, Any] = {}
+        self._cache_time: Dict[str, datetime] = {}
+        self._loop = None
+        self._thread = None
+
+        if not TWSCRAPE_AVAILABLE:
+            logger.info("twscrape kurulu değil. pip install twscrape")
+            return
+        if not username or not password:
+            logger.info("Twitter scraper: TWITTER_SCRAPE_USERNAME/PASSWORD eksik")
+            return
+
+        try:
+            import asyncio
+            self._loop = asyncio.new_event_loop()
+
+            def _run_loop():
+                asyncio.set_event_loop(self._loop)
+                self._loop.run_forever()
+
+            self._thread = threading.Thread(target=_run_loop, daemon=True)
+            self._thread.start()
+
+            future = asyncio.run_coroutine_threadsafe(
+                self._async_setup(username, password, email),
+                self._loop
+            )
+            future.result(timeout=60)
+        except Exception as e:
+            logger.warning(f"Twitter scraper kurulum hatası: {e}")
+
+    async def _async_setup(self, username: str, password: str, email: str):
+        self._api = twscrape.API()
+        await self._api.pool.add_account(
+            username=username,
+            password=password,
+            email=email or '',
+            email_password='',
+        )
+        await self._api.pool.login_all()
+        self.enabled = True
+        logger.info("Twitter scraper (twscrape) bağlandı.")
+
+    def _run_async(self, coro, timeout: int = 25):
+        """Async coroutine'i senkron context'te çalıştır."""
+        if self._loop is None:
+            return None
+        import asyncio
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        try:
+            return future.result(timeout=timeout)
+        except Exception as e:
+            logger.error(f"Twitter scraper async hata: {e}")
+            return None
+
+    async def _search(self, query: str, limit: int = 40) -> List[str]:
+        texts = []
+        async for tweet in self._api.search(query, limit=limit):
+            texts.append(tweet.rawContent)
+        return texts
+
+    def get_sentiment(self, symbol: str) -> AnalysisResult:
+        if not self.enabled:
+            return AnalysisResult.neutral('Twitter scraper devre dışı')
+
+        cache_key = f"twscrape_{symbol}"
+        if cache_key in self._cache:
+            if (datetime.now() - self._cache_time[cache_key]).seconds < self.CACHE_TTL:
+                return self._cache[cache_key]
+
+        coin_name = symbol.replace('USDT', '').lower()
+        query = self.QUERY_MAP.get(coin_name, f'${coin_name.upper()} lang:en')
+
+        try:
+            texts = self._run_async(self._search(query, limit=40))
+            if not texts:
+                result = AnalysisResult.neutral('Twitter scraper: Tweet bulunamadı')
+                self._cache[cache_key] = result
+                self._cache_time[cache_key] = datetime.now()
+                return result
+
+            # Skor hesapla
+            scores = []
+            for text in texts:
+                if self.vader:
+                    scores.append(vader_score(text, self.vader))
+                elif TEXTBLOB_AVAILABLE:
+                    scores.append(textblob_score(text))
+                else:
+                    scores.append(simple_sentiment_score(text))
+
+            avg_score = sum(scores) / len(scores) if scores else 0.0
+
+            # FinBERT ile iyileştir
+            if self.finbert and self.finbert._loaded:
+                finbert_val = self.finbert.analyze(texts[:20])
+                if finbert_val is not None:
+                    avg_score = 0.6 * finbert_val + 0.4 * avg_score
+
+            confidence = min(80, len(texts) * 2)
+            result = AnalysisResult(
+                score=float(np.clip(avg_score, -1, 1)),
+                confidence=float(confidence),
+                source='twitter_scrape',
+                details={'tweet_count': len(texts), 'method': 'twscrape'},
+                timestamp=datetime.now(),
+            )
+
+            self._cache[cache_key] = result
+            self._cache_time[cache_key] = datetime.now()
+            return result
+
+        except Exception as e:
+            logger.error(f"Twitter scraper analiz hatası: {e}")
+            return AnalysisResult.error(f'Twitter scraper: {e}')
+
+
 # ── Reddit Analizi (Opsiyonel) ───────────────────────────────────────────────
 
 class RedditSentimentAnalyzer:
@@ -511,6 +661,7 @@ class SentimentLayer:
         'cryptopanic': 0.3,
         'reddit': 0.25,
         'twitter': 0.25,
+        'twitter_scrape': 0.25,  # twscrape ile ücretsiz Twitter
         'finbert': 0.2,  # tek başına kullanıldığında
     }
 
@@ -527,6 +678,7 @@ class SentimentLayer:
         self.finbert: Optional[FinBERTAnalyzer] = None
         self.cryptopanic: Optional[CryptoPanicAnalyzer] = None
         self.twitter: Optional[TwitterSentimentAnalyzer] = None
+        self.twitter_scraper: Optional[TwitterScrapeSentimentAnalyzer] = None
         self.reddit: Optional[RedditSentimentAnalyzer] = None
 
         if self.enabled:
@@ -564,9 +716,23 @@ class SentimentLayer:
                 finbert=self.finbert
             )
 
+        # Twitter Scraper - ücretsiz alternatif (twscrape, kendi hesabınla)
+        tw_scrape_enabled = os.getenv('TWITTER_SCRAPE_ENABLED', 'false').lower() == 'true'
+        tw_username = os.getenv('TWITTER_SCRAPE_USERNAME', '')
+        tw_password = os.getenv('TWITTER_SCRAPE_PASSWORD', '')
+        if tw_scrape_enabled and tw_username and tw_password:
+            self.twitter_scraper = TwitterScrapeSentimentAnalyzer(
+                username=tw_username,
+                password=tw_password,
+                email=os.getenv('TWITTER_SCRAPE_EMAIL', ''),
+                finbert=self.finbert,
+            )
+
         active = ['cryptopanic']
         if self.twitter and self.twitter.enabled:
-            active.append('twitter')
+            active.append('twitter_api')
+        if self.twitter_scraper and self.twitter_scraper.enabled:
+            active.append('twitter_scrape')
         if self.reddit and self.reddit.enabled:
             active.append('reddit')
         if self.finbert:
@@ -593,11 +759,17 @@ class SentimentLayer:
             if r.score != 0 or r.confidence > 0:
                 results.append(('cryptopanic', r))
 
-        # Twitter
+        # Twitter API (ücretli)
         if self.twitter and self.twitter.enabled:
             r = self.twitter.get_sentiment(symbol)
             if not r.source.endswith('error'):
                 results.append(('twitter', r))
+
+        # Twitter Scraper (ücretsiz - twscrape)
+        if self.twitter_scraper and self.twitter_scraper.enabled:
+            r = self.twitter_scraper.get_sentiment(symbol)
+            if not r.source.endswith('error'):
+                results.append(('twitter_scrape', r))
 
         # Reddit
         if self.reddit and self.reddit.enabled:
@@ -650,11 +822,13 @@ class SentimentLayer:
         return {
             'enabled': self.enabled,
             'cryptopanic': self.cryptopanic is not None,
-            'twitter': self.twitter.enabled if self.twitter else False,
+            'twitter_api': self.twitter.enabled if self.twitter else False,
+            'twitter_scrape': self.twitter_scraper.enabled if self.twitter_scraper else False,
             'reddit': self.reddit.enabled if self.reddit else False,
             'finbert': self.finbert._loaded if self.finbert else False,
             'praw_available': PRAW_AVAILABLE,
             'tweepy_available': TWEEPY_AVAILABLE,
+            'twscrape_available': TWSCRAPE_AVAILABLE,
             'finbert_available': FINBERT_AVAILABLE,
             'vader_available': VADER_AVAILABLE,
         }
