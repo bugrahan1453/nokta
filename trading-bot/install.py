@@ -98,6 +98,19 @@ def pip_install(pip, packages, label=""):
     return True
 
 
+def upgrade_pip(pip):
+    """pip + setuptools + wheel'i güncelle (derleme hataları için şart)."""
+    info("pip / setuptools / wheel güncelleniyor...")
+    result = subprocess.run(
+        [pip, "install", "--quiet", "--upgrade", "pip", "setuptools", "wheel"],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        ok("pip araçları güncellendi")
+    else:
+        warn("pip güncellemesi kısmen başarısız, devam ediliyor")
+
+
 def install_requirements():
     title("3. Temel Paketler (requirements.txt)")
     pip, _ = get_pip()
@@ -106,16 +119,57 @@ def install_requirements():
         err("requirements.txt bulunamadı!")
         return False
 
+    # Önce pip araçlarını güncelle — derleme hataları genellikle buradan gelir
+    upgrade_pip(pip)
+
     info("Bu işlem 2-5 dakika sürebilir, lütfen bekleyin...")
     result = subprocess.run(
-        [pip, "install", "--quiet", "-r", "requirements.txt"],
+        [pip, "install", "--quiet",
+         "--prefer-binary",          # kaynak derlemek yerine wheel kullan
+         "--no-build-isolation",     # zaten yüklü araçları kullan
+         "-r", "requirements.txt"],
         capture_output=True, text=True
     )
     if result.returncode != 0:
-        err("requirements.txt kurulumu başarısız")
-        err(result.stderr.strip()[:200])
-        return False
+        # Toplu kurulum başarısız → tek tek dene
+        warn("Toplu kurulum başarısız, paketler tek tek deneniyor...")
+        return _install_one_by_one(pip)
     ok("Tüm temel paketler kuruldu")
+    return True
+
+
+def _install_one_by_one(pip):
+    """requirements.txt satırlarını tek tek kur, başarısızları raporla."""
+    failed = []
+    req_lines = Path("requirements.txt").read_text(encoding="utf-8").splitlines()
+
+    for line in req_lines:
+        line = line.strip()
+        # Yorum, boş satır, opsiyonel (# pip install ...) atla
+        if not line or line.startswith("#"):
+            continue
+        result = subprocess.run(
+            [pip, "install", "--quiet", "--prefer-binary", line],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            ok(f"Kuruldu: {line}")
+        else:
+            err(f"BAŞARISIZ: {line}")
+            # Sebebi tek satırda göster
+            detail = (result.stderr or result.stdout).strip().splitlines()
+            last = next((l for l in reversed(detail) if l.strip()), "")
+            warn(f"  → {last[:120]}")
+            failed.append(line)
+
+    if failed:
+        print()
+        err(f"{len(failed)} paket kurulamadı:")
+        for f in failed:
+            warn(f"  • {f}")
+        warn("Bu paketler eksik olabilir; bot kısıtlı çalışabilir.")
+        return len(failed) < 5   # 5'ten az hata varsa devam et
+    ok("Tüm paketler kuruldu")
     return True
 
 

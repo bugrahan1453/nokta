@@ -9,7 +9,7 @@ binance-futures-connector==3.3.0
 
 # --- Teknik Analiz ---
 pandas==2.1.4
-pandas-ta==0.3.14b
+pandas-ta>=0.3.14b
 numpy==1.26.4
 ta==0.11.0
 
