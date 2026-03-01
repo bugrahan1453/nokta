@@ -644,6 +644,114 @@ class RedditSentimentAnalyzer:
             return AnalysisResult.error(f'Reddit: {e}')
 
 
+# ── Reddit Public JSON (API key gerektirmez) ─────────────────────────────────
+
+class RedditPublicAnalyzer:
+    """
+    Reddit'in herkese açık JSON API'si ile duygu analizi.
+    Hiçbir API key, uygulama kaydı veya hesap gerektirmez.
+    https://www.reddit.com/r/Bitcoin/hot.json şeklinde çalışır.
+    """
+
+    CACHE_TTL = 900  # 15 dakika
+
+    SUBREDDITS = {
+        'BTCUSDT': ['Bitcoin', 'CryptoCurrency', 'BitcoinMarkets'],
+        'ETHUSDT': ['ethereum', 'CryptoCurrency', 'ethtrader'],
+        'SOLUSDT': ['solana', 'CryptoCurrency'],
+        'BNBUSDT': ['binance', 'CryptoCurrency'],
+        'XRPUSDT': ['Ripple', 'CryptoCurrency'],
+        'DEFAULT': ['CryptoCurrency', 'CryptoMarkets'],
+    }
+
+    HEADERS = {'User-Agent': 'TradingBot/1.0 (sentiment analysis, read-only)'}
+
+    def __init__(self, finbert: Optional[FinBERTAnalyzer] = None):
+        self.enabled = True
+        self.finbert = finbert
+        self.vader = SentimentIntensityAnalyzer() if VADER_AVAILABLE else None
+        self._cache: Dict[str, Any] = {}
+        self._cache_time: Dict[str, datetime] = {}
+        self._session = requests.Session()
+        self._session.headers.update(self.HEADERS)
+        logger.info("Reddit Public JSON analizi aktif (API key gerektirmez).")
+
+    def get_sentiment(self, symbol: str) -> AnalysisResult:
+        cache_key = f"reddit_public_{symbol}"
+        if cache_key in self._cache:
+            if (datetime.now() - self._cache_time[cache_key]).seconds < self.CACHE_TTL:
+                return self._cache[cache_key]
+
+        subreddits = self.SUBREDDITS.get(symbol.upper(), self.SUBREDDITS['DEFAULT'])
+        all_texts = []
+
+        for sub in subreddits[:2]:
+            try:
+                url = f"https://www.reddit.com/r/{sub}/hot.json?limit=25"
+                resp = self._session.get(url, timeout=10)
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                posts = data.get('data', {}).get('children', [])
+                for post in posts:
+                    p = post.get('data', {})
+                    title = p.get('title', '')
+                    selftext = p.get('selftext', '')[:200]
+                    text = f"{title} {selftext}".strip()
+                    if not text:
+                        continue
+                    rel = keyword_relevance(text, symbol)
+                    upvotes = p.get('score', 0)
+                    upvote_w = min(1.0, (upvotes + 1) / 1000)
+                    all_texts.append((text, rel, upvote_w))
+                time.sleep(0.5)  # Reddit rate limit
+            except Exception as e:
+                logger.debug(f"Reddit public {sub} hatası: {e}")
+
+        if not all_texts:
+            result = AnalysisResult.neutral('Reddit public: Post bulunamadı')
+            self._cache[cache_key] = result
+            self._cache_time[cache_key] = datetime.now()
+            return result
+
+        scores = []
+        for text, rel, upvote_w in all_texts:
+            if self.vader:
+                s = vader_score(text, self.vader)
+            elif TEXTBLOB_AVAILABLE:
+                s = textblob_score(text)
+            else:
+                s = simple_sentiment_score(text)
+            weight = 0.3 + rel * 0.4 + upvote_w * 0.3
+            scores.append(s * weight)
+
+        finbert_val = None
+        if self.finbert and self.finbert._loaded:
+            texts_only = [t for t, _, _ in all_texts[:15]]
+            finbert_val = self.finbert.analyze(texts_only)
+
+        final_score = sum(scores) / len(scores) if scores else 0.0
+        if finbert_val is not None:
+            final_score = 0.6 * finbert_val + 0.4 * final_score
+
+        confidence = min(80, len(all_texts) * 2)
+        result = AnalysisResult(
+            score=float(np.clip(final_score, -1, 1)),
+            confidence=float(confidence),
+            source='reddit_public',
+            details={
+                'post_count': len(all_texts),
+                'subreddits': subreddits[:2],
+                'method': 'public_json',
+            },
+            timestamp=datetime.now(),
+        )
+
+        self._cache[cache_key] = result
+        self._cache_time[cache_key] = datetime.now()
+        return result
+
+
 # numpy import - yukarıdaki sınıflarda kullanılıyor
 import numpy as np
 
@@ -660,9 +768,10 @@ class SentimentLayer:
     SOURCE_WEIGHTS = {
         'cryptopanic': 0.3,
         'reddit': 0.25,
+        'reddit_public': 0.25,   # ücretsiz, API key gerektirmez
         'twitter': 0.25,
         'twitter_scrape': 0.25,  # twscrape ile ücretsiz Twitter
-        'finbert': 0.2,  # tek başına kullanıldığında
+        'finbert': 0.2,
     }
 
     def __init__(self, settings=None):
@@ -680,6 +789,7 @@ class SentimentLayer:
         self.twitter: Optional[TwitterSentimentAnalyzer] = None
         self.twitter_scraper: Optional[TwitterScrapeSentimentAnalyzer] = None
         self.reddit: Optional[RedditSentimentAnalyzer] = None
+        self.reddit_public: Optional[RedditPublicAnalyzer] = None
 
         if self.enabled:
             self._init_components()
@@ -706,7 +816,10 @@ class SentimentLayer:
                 finbert=self.finbert
             )
 
-        # Reddit (opsiyonel)
+        # Reddit Public JSON (ücretsiz, API key gerektirmez - her zaman aktif)
+        self.reddit_public = RedditPublicAnalyzer(finbert=self.finbert)
+
+        # Reddit PRAW (opsiyonel - API key varsa daha fazla veri)
         reddit_id = os.getenv('REDDIT_CLIENT_ID', '')
         reddit_secret = os.getenv('REDDIT_CLIENT_SECRET', '')
         if reddit_id and reddit_secret:
@@ -728,13 +841,13 @@ class SentimentLayer:
                 finbert=self.finbert,
             )
 
-        active = ['cryptopanic']
+        active = ['cryptopanic', 'reddit_public']
         if self.twitter and self.twitter.enabled:
             active.append('twitter_api')
         if self.twitter_scraper and self.twitter_scraper.enabled:
             active.append('twitter_scrape')
         if self.reddit and self.reddit.enabled:
-            active.append('reddit')
+            active.append('reddit_praw')
         if self.finbert:
             active.append('finbert')
 
@@ -771,7 +884,13 @@ class SentimentLayer:
             if not r.source.endswith('error'):
                 results.append(('twitter_scrape', r))
 
-        # Reddit
+        # Reddit Public JSON (API key gerektirmez)
+        if self.reddit_public:
+            r = self.reddit_public.get_sentiment(symbol)
+            if not r.source.endswith('error'):
+                results.append(('reddit_public', r))
+
+        # Reddit PRAW (API key varsa)
         if self.reddit and self.reddit.enabled:
             r = self.reddit.get_sentiment(symbol)
             if not r.source.endswith('error'):
@@ -822,9 +941,10 @@ class SentimentLayer:
         return {
             'enabled': self.enabled,
             'cryptopanic': self.cryptopanic is not None,
+            'reddit_public': self.reddit_public is not None,
+            'reddit_praw': self.reddit.enabled if self.reddit else False,
             'twitter_api': self.twitter.enabled if self.twitter else False,
             'twitter_scrape': self.twitter_scraper.enabled if self.twitter_scraper else False,
-            'reddit': self.reddit.enabled if self.reddit else False,
             'finbert': self.finbert._loaded if self.finbert else False,
             'praw_available': PRAW_AVAILABLE,
             'tweepy_available': TWEEPY_AVAILABLE,
