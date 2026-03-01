@@ -5,7 +5,6 @@
 
 # --- Binance API ---
 python-binance==1.0.19
-binance-futures-connector==3.3.0
 
 # --- Teknik Analiz ---
 numpy>=2.0.0
