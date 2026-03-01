@@ -142,16 +142,22 @@ class BotController:
         while self._running:
             try:
                 current_status = self.get_status()
+                scan_start = time.time()
 
                 if current_status == "running":
                     self._process_signals()
                 elif current_status == "paused":
                     logger.debug(f"Bot duraklatıldı ({self._pause_reason}), sinyal işlenmedi.")
 
-                # Sinyal zaman dilimine kadar bekle (dakika * 60 saniye)
-                # Küçük aralıklarla kontrol ederek daha hızlı durdurulabilir
-                wait_seconds = self._signal_interval * 60
-                for _ in range(wait_seconds):
+                # Tarama ne kadar sürdüyse çıkar, hedefe kadar bekle
+                elapsed = time.time() - scan_start
+                target = self._signal_interval * 60
+                wait_seconds = max(5, target - elapsed)
+                logger.info(
+                    f"[DÖNGÜ] Tarama {elapsed:.1f}s sürdü. "
+                    f"Sonraki tarama {wait_seconds:.0f}s sonra."
+                )
+                for _ in range(int(wait_seconds)):
                     if not self._running:
                         break
                     time.sleep(1)
