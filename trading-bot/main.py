@@ -179,7 +179,7 @@ class BotController:
         # 1. Risk öncesi kontrol
         current_price = self.data_engine.price_cache.get(symbol) or 0.0
         if not current_price:
-            logger.debug(f"{symbol} fiyat verisi yok, atlanıyor.")
+            logger.warning(f"[ATLA] {symbol} fiyat verisi yok (WebSocket bekleniyor)")
             return
 
         # 2. AI anomali kontrolü
@@ -221,14 +221,21 @@ class BotController:
                 )
                 if regime_result.success:
                     ai_regime = regime_result.data.get('regime')
-                    if not regime_result.data.get('should_trade', True):
-                        logger.info(
-                            f"{symbol} AI rejimi işlem öneriyor değil: "
-                            f"{regime_result.data.get('reason')}"
-                        )
+                    trend_strength = regime_result.data.get('trend_strength', 5)
+                    should_trade = regime_result.data.get('should_trade', True)
+                    logger.info(
+                        f"[AI] {symbol} rejim={ai_regime} güç={trend_strength} "
+                        f"işlem={'✓' if should_trade else '✗'} | "
+                        f"{regime_result.data.get('reason', '')}"
+                    )
+                    # Sadece yüksek volatilite VEYA trend_strength 0-1 ise veto
+                    if not should_trade and (
+                        ai_regime == 'high_volatility' or trend_strength <= 1
+                    ):
+                        logger.info(f"[AI VETO] {symbol} işlem açılmıyor.")
                         return
             except Exception as e:
-                logger.debug(f"AI rejim analiz hatası: {e}")
+                logger.warning(f"AI rejim analiz hatası: {e}")
 
         signal = self.signal_engine.analyze(symbol, ai_regime=ai_regime)
 
@@ -436,6 +443,13 @@ def initialize() -> BotController:
         BotController._get_interval_str(settings.signal.trend_timeframe),
     ]
     data_engine.preload_klines(settings.trading_symbols, intervals, limit=200)
+
+    # Preload'dan fiyat önbelleğini besle (WebSocket bağlanmadan önce ilk scan için)
+    for sym in settings.trading_symbols:
+        seed_candles = data_engine.kline_cache.get(sym, intervals[0])
+        if seed_candles:
+            data_engine.price_cache.update(sym, seed_candles[-1]["close"])
+            logger.info(f"{sym} başlangıç fiyatı önbelleğe alındı: {seed_candles[-1]['close']}")
 
     # 7. WebSocket başlat
     data_engine.start_websocket(settings.trading_symbols, intervals)

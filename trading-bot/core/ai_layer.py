@@ -214,13 +214,13 @@ JSON formatı:
 
         if avg_vol > 2.0:
             regime = MarketRegime.HIGH_VOLATILITY
-            should_trade = False
+            should_trade = False  # Aşırı volatilite: gerçek veto
         elif abs(price_change) > 3:
             regime = MarketRegime.TRENDING_UP if price_change > 0 else MarketRegime.TRENDING_DOWN
             should_trade = True
         else:
             regime = MarketRegime.SIDEWAYS
-            should_trade = False
+            should_trade = True  # Sinyal motoru zaten filtreler, burada bloklama
 
         return AIAnalysisResult(True, {
             "regime": regime,
