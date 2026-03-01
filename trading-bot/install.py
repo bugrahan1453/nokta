@@ -149,9 +149,8 @@ def _install_one_by_one(pip):
     )
 
     for line in req_lines:
-        line = line.strip()
-        # Yorum, boş satır, opsiyonel (# pip install ...) atla
-        if not line or line.startswith("#"):
+        line = line.split("#")[0].strip()  # satır içi yorumları temizle
+        if not line:
             continue
         result = subprocess.run(
             [pip, "install", "--quiet", "--prefer-binary", line],
