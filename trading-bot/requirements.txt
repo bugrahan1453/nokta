@@ -5,7 +5,7 @@
 
 # --- Binance API ---
 python-binance==1.0.19
-binance-futures-connector==4.0.2
+binance-futures-connector==3.3.0
 
 # --- Teknik Analiz ---
 pandas==2.1.4
@@ -23,7 +23,7 @@ WTForms==3.1.1
 
 # --- Async & Zamanlama ---
 aiohttp==3.9.1
-asyncio==3.4.3
+# asyncio - Python 3.4+ içinde gömülü, kurulum gerekmez
 apscheduler==3.10.4
 websocket-client==1.7.0
 websockets==12.0
